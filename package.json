@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "Sendm authentication with Telegram 2FA using Telegraf",
   "main": "server.js",
-  "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
