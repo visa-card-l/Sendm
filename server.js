@@ -1,4 +1,3 @@
-
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -8,6 +7,9 @@ const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Secure 64-character JWT secret key
+const JWT_SECRET = 'pX9kL2mN7qR4tV8wE3zA6bC9dF1gH5jJ0nP2sT5uY8iO3lK6mN9pQ2rE5tW8xZ';
 
 // Middleware
 app.use(express.json());
@@ -26,9 +28,6 @@ const authLimiter = rateLimit({
 // In-memory user storage (replace with database in production)
 let users = [];
 let passwordResetTokens = new Map();
-
-// JWT configuration
-const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
 
 // Helper function to validate email
 const isValidEmail = (email) => {
@@ -150,11 +149,9 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
     const user = users.find(u => u.email === email);
     if (!user) {
-      // Don't reveal if email exists for security reasons
       return res.json({ success: true, message: 'If an account with that email exists, a password reset link has been sent.' });
     }
 
-    // Generate reset token
     const resetToken = uuidv4();
     const resetTokenExpiry = Date.now() + 60 * 60 * 1000; // 1 hour expiry
 
@@ -163,8 +160,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       expiresAt: resetTokenExpiry
     });
 
-    // In production, you would send an email with this reset token
-    console.log(`Password reset token for ${email}: ${resetToken} (expires at ${new Date(resetTokenExpiry)})`);
+    console.log(`Password reset token for \( {email}: \){resetToken} (expires at ${new Date(resetTokenExpiry)})`);
 
     res.json({
       success: true,
@@ -218,14 +214,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Hash new password
     const salt = await bcrypt.genSalt(12);
     const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-    // Update password
     user.password = hashedPassword;
-
-    // Remove used token
     passwordResetTokens.delete(token);
 
     res.json({ success: true, message: 'Password has been successfully reset' });
