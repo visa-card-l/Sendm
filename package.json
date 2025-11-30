@@ -1,36 +1,37 @@
 {
-  "name": "sendm-telegram-backend",
+  "name": "sendm-auth-backend",
   "version": "1.0.0",
-  "description": "Secure auth backend with Telegram 2FA using Telegraf, JWT, bcrypt, and in-memory storage",
+  "description": "Sendm authentication with Telegram 2FA using Telegraf",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
   "keywords": [
-    "express",
+    "sendm",
     "telegram",
-    "telegraf",
-    "authentication",
     "2fa",
+    "auth",
     "jwt",
-    "bcrypt"
+    "telegraf"
   ],
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
+    "axios": "^1.7.7",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "express": "^4.21.1",
+    "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
     "jsonwebtoken": "^9.0.2",
     "telegraf": "^4.16.3",
-    "uuid": "^8.15.1"
+    "uuid": "^10.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.7"
   },
   "engines": {
-    "node": ">=18.x <=22.x"
+    "node": ">=18.0.0"
   }
 }
