@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Sendm Dashboard</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #1564C0;
+      --primary-light: #3485e5;
+      --gray-100: #f8f9fa;
+      --gray-600: #6c757d;
+      --gray-800: #343a40;
+      --success: #28a745;
+    }
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background:#f5f7fa;
+      color:#333;
+      min-height:100vh;
+      display:flex;
+      position: relative;
+    }
+
+    /* Blur overlay when Telegram bot not connected */
+    .blur-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(255, 255, 255, 0.95);
+      backdrop-filter: blur(12px);
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.4s ease;
+    }
+    .blur-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .blur-modal {
+      background: white;
+      padding: 40px 50px;
+      border-radius: 24px;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.25);
+      text-align: center;
+      max-width: 460px;
+      width: 90%;
+      transform: scale(0.9);
+      transition: transform 0.4s ease;
+    }
+    .blur-overlay.active .blur-modal { transform: scale(1); }
+
+    .blur-modal h2 {
+      font-size: 28px;
+      margin-bottom: 16px;
+      color: #222;
+    }
+    .blur-modal p {
+      color: #555;
+      font-size: 16px;
+      margin-bottom: 30px;
+      line-height: 1.6;
+    }
+    .connect-btn {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 16px 36px;
+      font-size: 17px;
+      font-weight: 600;
+      border-radius: 16px;
+      cursor: pointer;
+      box-shadow: 0 10px 30px rgba(21,100,192,0.3);
+      transition: all 0.3s;
+    }
+    .connect-btn:hover {
+      background: var(--primary-light);
+      transform: translateY(-3px);
+      box-shadow: 0 15px 35px rgba(21,100,192,0.4);
+    }
+
+    /* Original styles */
+    .sidebar { width:260px; background:white; box-shadow:-2px 0 10px rgba(0,0,0,0.05); padding:20px 0; position:fixed; right:0; top:0; height:100%; z-index:1000; transition:transform 0.3s ease; transform:translateX(100%); display:flex; flex-direction:column; }
+    .sidebar.open { transform:translateX(0); }
+    .logo-sidebar { padding:0 24px 30px; font-size:24px; font-weight:700; color:var(--primary); font-family:'Poppins',sans-serif; letter-spacing:1px; }
+    .nav-item { display:flex; align-items:center; padding:12px 24px; color:var(--gray-800); cursor:pointer; transition:0.2s; }
+    .nav-item i { width:24px; margin-right:12px; }
+    .nav-item:hover { background:var(--gray-100); }
+    .nav-item.active { background:#ebf3ff; color:var(--primary); border-right:4px solid var(--primary); font-weight:600; }
+    .logout-item { margin-top:auto; padding:12px 24px; color:#dc3545; font-weight:600; cursor:pointer; transition:0.2s; }
+    .logout-item:hover { background:#fee2e2; }
+    .logout-item i { width:24px; margin-right:12px; }
+    .overlay { position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:999; opacity:0; visibility:hidden; transition:opacity 0.3s; }
+    .overlay.active { opacity:1; visibility:visible; }
+    .main { flex:1; margin-right:260px; transition:margin-right 0.3s; }
+    .topbar { background:white; padding:16px 30px; box-shadow:0 2px 8px rgba(0,0,0,0.08); display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; z-index:10; }
+    .logo-section { display:flex; align-items:center; gap:12px; }
+    .hamburger { font-size:24px; cursor:pointer; color:var(--primary); display:none; }
+    .logo { font-size:18px; font-weight:700; font-family:'Poppins',sans-serif; color:var(--primary); letter-spacing:1px; }
+    .tall-s { font-size:26px; vertical-align:baseline; }
+    .logo-sidebar .tall-s { font-size:34px; }
+    .user-info { display:flex; align-items:center; gap:14px; font-weight:500; }
+    .avatar { width:40px; height:40px; border-radius:50%; background:var(--primary); color:white; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:16px; }
+    .content { padding:40px 30px; max-width:900px; margin:0 auto; width:100%; }
+    .welcome-section { margin-bottom:30px; display:flex; align-items:center; gap:14px; }
+    .stats-grid { display:flex; flex-direction:column; gap:28px; }
+    .stat-card { background:white; padding:32px; border-radius:24px; box-shadow:0 25px 50px -12px rgba(0,0,0,0.15),0 10px 20px -10px rgba(0,0,0,0.08),inset 0 1px 0 rgba(255,255,255,0.6); position:relative; transition:all 0.3s cubic-bezier(0.4,0,0.2,1); border:1px solid rgba(255,255,255,0.2); }
+    .stat-card:hover { transform:translateY(-12px); box-shadow:0 35px 70px -15px rgba(0,0,0,0.2); }
+    .stat-label { font-size:14px; color:var(--gray-600); text-transform:uppercase; letter-spacing:0.8px; margin-bottom:12px; }
+    .stat-value { font-size:38px; font-weight:700; color:var(--primary); margin:8px 0; }
+    .plan-badge { background:#fff4d6; color:#a07800; padding:5px 12px; border-radius:12px; font-size:13px; font-weight:600; display:inline-block; }
+    .upgrade-btn { background:var(--primary); color:white; border:none; padding:12px 24px; border-radius:12px; font-weight:600; cursor:pointer; margin-top:16px; font-size:15px; transition:all 0.3s; box-shadow:0 8px 20px rgba(21,100,192,0.3); }
+    .upgrade-btn:hover { background:var(--primary-light); transform:translateY(-2px); }
+
+    @media (min-width: 992px) { .stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:28px; } }
+    @media (max-width: 992px) { .sidebar { transform:translateX(100%); } .sidebar.open { transform:translateX(0); } .main { margin-right:0; } .hamburger { display:block; } }
+  </style>
+</head>
+<body>
+
+  <!-- BLUR MODAL: Shown when Telegram bot not connected -->
+  <div class="blur-overlay" id="blurOverlay">
+    <div class="blur-modal">
+      <h2>Telegram 2FA Required</h2>
+      <p>
+        For security, you must connect your personal Telegram bot to receive password reset codes and enable 2FA.
+      </p>
+      <button class="connect-btn" onclick="window.open('bot.html', '_blank')">
+        Connect Telegram Bot Now
+      </button>
+    </div>
+  </div>
+
+  <div class="overlay" id="overlay"></div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="logo-sidebar"><span class="tall-s">S</span>endm</div>
+    <nav style="flex-grow: 1;">
+      <div class="nav-item active"><i class="fas fa-home"></i> Dashboard</div>
+      <div class="nav-item"><i class="fas fa-envelope"></i> Schedule</div>
+      <div class="nav-item"><i class="fas fa-users"></i> Contacts</div>
+      <div class="nav-item"><i class="fas fa-file-alt"></i> Forms & Landing Pages</div>
+      <div class="nav-item"><i class="fas fa-cog"></i> Settings</div>
+    </nav>
+    <div class="logout-item" id="logoutBtn">
+      <i class="fas fa-sign-out-alt"></i> Logout
+    </div>
+  </aside>
+
+  <!-- Main Content -->
+  <div class="main">
+    <header class="topbar">
+      <div class="logo-section">
+        <span class="logo"><span class="tall-s">S</span>endm</span>
+      </div>
+      <i class="fas fa-bars hamburger" id="hamburger"></i>
+    </header>
+
+    <section class="content">
+      <div class="welcome-section">
+        <div class="user-info">
+          <span>Welcome, <strong id="userName">Loading...</strong></span>
+          <div class="avatar" id="userAvatar">?</div>
+        </div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Current Plan</div>
+          <div class="plan-badge">Free Plan</div>
+          <div class="stat-value">Free</div>
+          <p style="color:#666;margin:12px 0;font-size:15px;">Limited to 300 messages/day</p>
+          <button class="upgrade-btn">Upgrade Plan</button>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-label">Total Contacts</div>
+          <div class="stat-value">8,429</div>
+          <p style="color:var(--success);font-weight:600;">+127 this week</p>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-label">Forms & Landing Pages</div>
+          <div class="stat-value">12</div>
+          <p style="color:#666;font-size:15px;">8 active • 4 drafts</p>
+        </div>
+
+        <div class="stat-card">
+          <div class="stat-label">Messages Sent This Month</div>
+          <div class="stat-value">18,742</div>
+          <p style="color:var(--success);font-weight:600;">62% of limit</p>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    // ONLY CHANGE THIS LINE IF YOUR BACKEND MOVES
+    const BASE_URL = 'https://sendm.onrender.com';
+
+    const hamburger = document.getElementById('hamburger');
+    const sidebar = document.getElementById('sidebar');
+    const overlay = document.getElementById('overlay');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const blurOverlay = document.getElementById('blurOverlay');
+    const userNameEl = document.getElementById('userName');
+    const userAvatarEl = document.getElementById('userAvatar');
+
+    // Mobile sidebar toggle
+    hamburger.addEventListener('click', () => {
+      sidebar.classList.toggle('open');
+      overlay.classList.toggle('active');
+    });
+    overlay.addEventListener('click', () => {
+      sidebar.classList.remove('open');
+      overlay.classList.remove('active');
+    });
+
+    // Logout
+    logoutBtn.addEventListener('click', () => {
+      localStorage.clear();
+      sessionStorage.clear();
+      document.cookie.split(";").forEach(c => {
+        const name = c.split("=")[0].trim();
+        document.cookie = name + "=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/";
+      });
+      window.location.href = "login.html";
+    });
+
+    // Load user data from backend
+    async function loadUser() {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        window.location.href = 'login.html';
+        return;
+      }
+
+      try {
+        const res = await fetch(`${BASE_URL}/api/auth/me`, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+
+        if (!res.ok) throw new Error('Unauthorized');
+
+        const { user } = await res.json();
+
+        // Update UI
+        userNameEl.textContent = user.fullName || user.email.split('@')[0];
+
+        const initials = (user.fullName || user.email)
+          .split(' ')
+          .map(n => n[0])
+          .join('')
+          .substring(0,2)
+          .toUpperCase();
+        userAvatarEl.textContent = initials || '??';
+
+        // Show blur modal if Telegram not connected
+        if (!user.isTelegramConnected) {
+          blurOverlay.classList.add('active');
+        } else {
+          blurOverlay.classList.remove('active');
+        }
+
+      } catch (err) {
+        console.error('Auth failed:', err);
+        localStorage.removeItem('token');
+        window.location.href = 'login.html';
+      }
+    }
+
+    // Run on load
+    loadUser();
+  </script>
+</body>
+</html>

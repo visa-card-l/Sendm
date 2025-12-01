@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sendm - Sign In</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #1564C0;
+      --primary-light: #3485e5;
+      --success: #28a745;
+      --danger: #dc3545;
+      --gray-800: #343a40;
+      --white: #ffffff;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', 'Poppins', sans-serif;
+      background: #f5f7fa;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px 20px;
+    }
+
+    .auth-form {
+      width: 100%;
+      max-width: 420px;
+      background: var(--white);
+      padding: 50px 40px;
+      border-radius: 24px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+      position: relative;
+      z-index: 1;
+    }
+
+    .logo { font-size: 36px; font-weight: 700; color: var(--primary); text-align: center; margin-bottom: 8px; }
+    .tall-s { font-size: 1.2em; }
+    h2 { font-size: 32px; font-weight: 700; color: var(--gray-800); text-align: center; margin-bottom: 8px; }
+    .subtitle { color: #6c757d; font-size: 16px; text-align: center; margin-bottom: 40px; }
+
+    .form-group { position: relative; margin-bottom: 24px; }
+    .form-group input {
+      width: 100%;
+      padding: 16px 50px 16px 20px;
+      border: 2px solid #e9ecef;
+      border-radius: 14px;
+      font-size: 16px;
+      transition: all 0.3s ease;
+    }
+    .form-group input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 4px rgba(21, 100, 192, 0.08);
+    }
+
+    .input-icon, .password-toggle {
+      position: absolute;
+      right: 18px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #6c757d;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    .form-group input:focus ~ .input-icon,
+    .form-group input:focus ~ .password-toggle { color: var(--primary); }
+
+    .forgot-link { text-align: right; margin: -20px 0 24px; }
+    .forgot-link a { color: var(--primary); font-size: 14px; text-decoration: none; font-weight: 500; }
+    .forgot-link a:hover { text-decoration: underline; }
+
+    .auth-btn {
+      width: 100%;
+      padding: 18px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: 14px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 12px 30px rgba(21, 100, 192, 0.3);
+      margin-bottom: 32px;
+    }
+    .auth-btn:hover { background: var(--primary-light); transform: translateY(-2px); }
+    .auth-btn:disabled { opacity: 0.7; cursor: not-allowed; transform: none; }
+
+    .auth-link { text-align: center; color: #6c757d; font-size: 15px; }
+    .auth-link a { color: var(--primary); font-weight: 600; text-decoration: none; }
+    .auth-link a:hover { text-decoration: underline; }
+
+    .switch-form { display: none; }
+    .switch-form.active { display: block; }
+
+    /* MODAL */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.3s ease;
+    }
+    .modal-overlay.show { opacity: 1; visibility: visible; }
+
+    .modal {
+      background: white;
+      padding: 30px;
+      border-radius: 20px;
+      text-align: center;
+      width: 90%;
+      max-width: 400px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      transform: scale(0.7);
+      transition: transform 0.4s ease;
+      position: relative;
+    }
+    .modal-overlay.show .modal { transform: scale(1); }
+
+    .modal-icon {
+      font-size: 56px;
+      margin-bottom: 16px;
+    }
+    .modal.success .modal-icon { color: var(--success); }
+    .modal.error .modal-icon { color: var(--danger); }
+
+    .modal h3 { font-size: 24px; margin-bottom: 12px; color: var(--gray-800); }
+    .modal p { color: #666; margin-bottom: 20px; font-size: 15px; }
+
+    .modal-close {
+      position: absolute;
+      top: 12px;
+      right: 16px;
+      background: none;
+      border: none;
+      font-size: 28px;
+      color: #aaa;
+      cursor: pointer;
+    }
+    .modal-close:hover { color: #333; }
+
+    @media (max-width: 480px) {
+      .auth-form { padding: 40px 30px; }
+      h2 { font-size: 28px; }
+      .logo { font-size: 32px; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="auth-form">
+    <!-- Login Form -->
+    <div class="switch-form active" id="loginForm">
+      <div class="logo"><span class="tall-s">S</span>endm</div>
+      <h2>Sign in to your account</h2>
+      <p class="subtitle">Welcome back. Please enter your credentials.</p>
+
+      <form id="loginFormElement">
+        <div class="form-group">
+          <input type="email" id="loginEmail" placeholder="Email address" required>
+          <i class="fas fa-envelope input-icon"></i>
+        </div>
+        <div class="form-group">
+          <input type="password" id="loginPassword" placeholder="Password" required>
+          <i class="fas fa-eye password-toggle" id="loginToggle" onclick="togglePassword('loginPassword', 'loginToggle')"></i>
+        </div>
+        <div class="forgot-link">
+          <a href="#" onclick="switchForm('forgotPasswordForm')">Forgot password?</a>
+        </div>
+        <button type="submit" class="auth-btn" id="loginBtn">Sign In</button>
+      </form>
+
+      <p class="auth-link">
+        Don't have an account? <a href="#" onclick="switchForm('signupForm')">Sign up here</a>
+      </p>
+    </div>
+
+    <!-- Signup Form -->
+    <div class="switch-form" id="signupForm">
+      <div class="logo"><span class="tall-s">S</span>endm</div>
+      <h2>Create your account</h2>
+      <p class="subtitle">Get started with a free account.</p>
+
+      <form id="signupFormElement">
+        <div class="form-group">
+          <input type="text" id="signupName" placeholder="Full name" required>
+          <i class="fas fa-user input-icon"></i>
+        </div>
+        <div class="form-group">
+          <input type="email" id="signupEmail" placeholder="Email address" required>
+          <i class="fas fa-envelope input-icon"></i>
+        </div>
+        <div class="form-group">
+          <input type="password" id="signupPassword" placeholder="Password" required>
+          <i class="fas fa-eye password-toggle" id="signupToggle" onclick="togglePassword('signupPassword', 'signupToggle')"></i>
+        </div>
+        <button type="submit" class="auth-btn" id="signupBtn">Create Account</button>
+      </form>
+
+      <p class="auth-link">
+        Already have an account? <a href="#" onclick="switchForm('loginForm')">Sign in here</a>
+      </p>
+    </div>
+
+    <!-- Forgot Password Form -->
+    <div class="switch-form" id="forgotPasswordForm">
+      <div class="logo"><span class="tall-s">S</span>endm</div>
+      <  <h2>Reset your password</h2>
+      <p class="subtitle">Enter your email and we'll send you a reset link.</p>
+
+      <form id="forgotFormElement">
+        <div class="form-group">
+          <input type="email" id="forgotEmail" placeholder="Email address" required>
+          <i class="fas fa-envelope input-icon"></i>
+        </div>
+        <button type="submit" class="auth-btn" id="forgotBtn">Send Reset Link</button>
+      </form>
+
+      <p class="auth-link">
+        Remember your password? <a href="#" onclick="switchForm('loginForm')">Sign in here</a>
+      </p>
+    </div>
+  </div>
+
+  <!-- Modal -->
+  <div class="modal-overlay" id="modalOverlay">
+    <div class="modal" id="modal">
+      <button class="modal-close" onclick="closeModal()">×</button>
+      <div class="modal-icon" id="modalIcon"></div>
+      <h3 id="modalTitle">Success!</h3>
+      <p id="modalMessage">You have been logged in successfully.</p>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'https://sendm.onrender.com/api/auth';
+
+    // Modal
+    function showModal(type, title, message) {
+      const overlay = document.getElementById('modalOverlay');
+      const modal = document.getElementById('modal');
+      const icon = document.getElementById('modalIcon');
+      const modalTitle = document.getElementById('modalTitle');
+      const modalMessage = document.getElementById('modalMessage');
+
+      modal.className = 'modal ' + type;
+      icon.innerHTML = type === 'success' 
+        ? '<i class="fas fa-check-circle"></i>' 
+        : '<i class="fas fa-times-circle"></i>';
+      modalTitle.textContent = title;
+      modalMessage.textContent = message;
+
+      overlay.classList.add('show');
+
+      if (type === 'success') {
+        setTimeout(() => {
+          closeModal();
+          window.location.href = 'dashboard.html';
+        }, 3000);
+      }
+    }
+
+    function closeModal() {
+      document.getElementById('modalOverlay').classList.remove('show');
+    }
+
+    function togglePassword(id, iconId) {
+      const input = document.getElementById(id);
+      const icon = document.getElementById(iconId);
+      if (input.type === 'password') {
+        input.type = 'text';
+        icon.classList.replace('fa-eye', 'fa-eye-slash');
+      } else {
+        input.type = 'password';
+        icon.classList.replace('fa-eye-slash', 'fa-eye');
+      }
+    }
+
+    function switchForm(id) {
+      document.querySelectorAll('.switch-form').forEach(f => f.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+    }
+
+    // SIGNUP
+    document.getElementById('signupFormElement').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('signupBtn');
+      btn.disabled = true;
+      btn.textContent = 'Creating...';
+
+      const payload = {
+        fullName: document.getElementById('signupName').value.trim(),
+        email: document.getElementById('signupEmail').value.trim(),
+        password: document.getElementById('signupPassword').value
+      };
+
+      try {
+        const res = await fetch(`${API_BASE}/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+          localStorage.setItem('token', data.token);
+          localStorage.setItem('user', JSON.stringify(data.user));
+          showModal('success', 'Welcome!', `Hi ${data.user.fullName.split(' ')[0]}! Account created.`);
+        } else {
+          showModal('error', 'Signup Failed', data.error || 'Please try again');
+        }
+      } catch (err) {
+        showModal('error', 'No Connection', 'Check your internet and try again');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Account';
+      }
+    });
+
+    // LOGIN
+    document.getElementById('loginFormElement').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('loginBtn');
+      btn.disabled = true;
+      btn.textContent = 'Signing In...';
+
+      const payload = {
+        email: document.getElementById('loginEmail').value.trim(),
+        password: document.getElementById('loginPassword').value
+      };
+
+      try {
+        const res = await fetch(`${API_BASE}/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+          localStorage.setItem('token', data.token);
+          localStorage.setItem('user', JSON.stringify(data.user));
+          showModal('success', 'Welcome back!', `Hi ${data.user.fullName.split(' ')[0]}!`);
+        } else {
+          showModal('error', 'Login Failed', data.error || 'Invalid email or password');
+        }
+      } catch (err) {
+        showModal('error', 'No Connection', 'Cannot reach server');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Sign In';
+      }
+    });
+
+    // FORGOT PASSWORD - NOW WITH REAL FEEDBACK
+    document.getElementById('forgotFormElement').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('forgotBtn');
+      const email = document.getElementById('forgotEmail').value.trim();
+
+      if (!email || !email.includes('@')) {
+        showModal('error', 'Invalid Email', 'Please enter a valid email address');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.textContent = 'Sending...';
+
+      try {
+        const res = await fetch(`${API_BASE}/forgot-password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        const data = await res.json();
+
+        if (res.ok && data.success) {
+          showModal('success', 'Check Your Inbox!', `We sent a reset link to ${email}`);
+          setTimeout(() => switchForm('loginForm'), 4000);
+        } else {
+          const msg = data.error?.toLowerCase().includes('not found') || data.error?.toLowerCase().includes('exist')
+            ? 'No account found with that email'
+            : data.error || 'Failed to send reset link';
+          showModal('error', 'Not Found', msg);
+        }
+      } catch (err) {
+        showModal('error', 'No Connection', 'Please check your internet');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Send Reset Link';
+      }
+    });
+
+    // Auto redirect if already logged in
+    if (localStorage.getItem('token')) {
+      window.location.href = 'dashboard.html';
+    }
+  </script>
+</body>
+</html>
