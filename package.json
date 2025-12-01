@@ -1,31 +1,23 @@
 {
-  "name": "sendm-auth-backend",
+  "name": "sendm-backend",
   "version": "1.0.0",
-  "description": "Secure authentication backend with Telegram 2FA delivery for Sendm",
-  "main": "server.js",
-  "type": "commonjs",
+  "description": "Sendm – Telegram 2FA Backend (works like Plexzora, Blum, Hamster)",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
-  "keywords": [
-    "express",
-    "telegram",
-    "2fa",
-    "auth",
-    "jwt",
-    "telegraf"
-  ],
-  "author": "",
+  "keywords": ["telegram", "2fa", "bot", "telegraf", "express"],
+  "author": "you",
   "license": "MIT",
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "express": "^4.21.1",
+    "express": "^4.latest",
     "express-rate-limit": "^7.4.0",
     "jsonwebtoken": "^9.0.2",
-    "telegraf": "^4.16.3",
-    "uuid": "^10.0.0"
+    "node-fetch": "^2.7.0",
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "nodemon": "^3.1.7"
