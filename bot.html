@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Connect Telegram Bot • Sendm</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
+  <style>
+    :root {
+      --primary: #1564C0;
+      --primary-light: #3485e5;
+      --success: #28a745;
+      --danger: #dc3545;
+      --gray-100: #f8f9fa;
+      --gray-600: #6c757d;
+      --gray-800: #343a40;
+      --radius: 16px;
+      --shadow: 0 8px 30px rgba(0,0,0,0.12);
+    }
+
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: linear-gradient(135deg, #f5f7fa 0%, #e8f0fe 100%);
+      color: #333;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 560px;
+      width: 100%;
+      background: white;
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .header {
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      color: white;
+      padding: 40px 32px;
+      text-align: center;
+    }
+    .header i { font-size: 52px; margin-bottom: 16px; }
+    .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+    .header p { opacity: 0.95; font-size: 16px; }
+
+    .content { padding: 40px 32px; }
+
+    .steps { counter-reset: step; margin-bottom: 32px; }
+    .step {
+      display: flex;
+      gap: 18px;
+      margin-bottom: 28px;
+      align-items: flex-start;
+    }
+    .step:last-child { margin-bottom: 0; }
+
+    .step-number {
+      counter-increment: step;
+      background: var(--primary);
+      color: white;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: bold;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    .step-content h3 {
+      font-size: 17px;
+      margin-bottom: 8px;
+      color: var(--gray-800);
+      font-weight: 600;
+    }
+    .step-content p {
+      font-size: 15px;
+      color: var(--gray-600);
+      line-height: 1.6;
+      margin-bottom: 8px;
+    }
+    code {
+      background: var(--gray-100);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      color: #d63384;
+    }
+    .botfather-link {
+      color: var(--primary);
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .botfather-link:hover { text-decoration: underline; }
+
+    .token-example {
+      background: #f0f5ff;
+      border: 1px solid #d0e2ff;
+      border-radius: 10px;
+      padding: 16px;
+      font-family: 'Courier New', monospace;
+      font-size: 14px;
+      margin-top: 12px;
+      word-break: break-all;
+      color: #1a5fb4;
+    }
+
+    .form-group { margin: 32px 0 24px; }
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 10px;
+      color: var(--gray-800);
+    }
+    input[type="text"] {
+      width: 100%;
+      padding: 16px 18px;
+      font-size: 16px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      background: #fafcff;
+      transition: all 0.2s;
+    }
+    input[type="text"]:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 4px rgba(21, 100, 192, 0.12);
+    }
+
+    .btn {
+      background: var(--primary);
+      color: white;
+      border: none;
+      padding: 16px 32px;
+      border-radius: 12px;
+      font-size: 17px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      transition: all 0.2s;
+      box-shadow: 0 4px 15px rgba(21, 100, 192, 0.3);
+      margin-top: 20px;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+    }
+    .btn:hover { background: var(--primary-light); transform: translateY(-2px); }
+    .btn:disabled {
+      background: #999;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .btn-small {
+      width: auto;
+      padding: 14px 28px;
+      font-size: 16px;
+      margin: 10px auto;
+      display: block;
+    }
+
+    .message {
+      margin-top: 20px;
+      padding: 18px;
+      border-radius: 12px;
+      text-align: center;
+      font-weight: 500;
+      display: none;
+      line-height: 1.6;
+    }
+    .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+    .error   { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+
+    .activated {
+      text-align: center;
+      padding: 32px 20px;
+      background: #d4edda;
+      border: 1px solid #c3e6cb;
+      border-radius: 12px;
+      color: #155724;
+      margin-top: 20px;
+    }
+    .activated h3 { margin-bottom: 12px; font-size: 22px; }
+    .activated p { margin-bottom: 20px; opacity: 0.9; }
+
+    .footer-note {
+      text-align: center;
+      margin-top: 32px;
+      font-size: 14px;
+      color: var(--gray-600);
+    }
+    .footer-note a {
+      color: var(--primary);
+      text-decoration: none;
+      font-weight: 500;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="header">
+      <i class="fab fa-telegram-plane"></i>
+      <h1>Connect Your Telegram Bot</h1>
+      <p>One-time setup — takes less than 2 minutes</p>
+    </div>
+
+    <div class="content">
+
+      <div class="steps" id="stepsSection">
+
+        <div class="step">
+          <div class="step-number">1</div>
+          <div class="step-content">
+            <h3>Open @BotFather</h3>
+            <p>Tap here → <a href="https://t.me/BotFather" target="_blank" class="botfather-link">@BotFather</a></p>
+            <p>Type <code>/newbot</code> and follow the steps</p>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-number">2</div>
+          <div class="step-content">
+            <h3>Copy the token</h3>
+            <p>BotFather will send you a token that looks like:</p>
+            <div class="token-example">
+              7123456789:AAFhExampleToken1234567890abcdef
+            </div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-number">3</div>
+          <div class="step-content">
+            <h3>Paste it below</h3>
+            <p>We’ll verify it instantly and activate 2FA</p>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="form-group" id="formSection">
+        <label for="botToken">Your Bot Token</label>
+        <input type="text" id="botToken" placeholder="Paste your token here..." autocomplete="off" />
+      </div>
+
+      <button class="btn" id="connectBtn">
+        Connect Bot Now
+      </button>
+
+      <div id="message" class="message"></div>
+
+      <!-- Activated State -->
+      <div id="activatedSection" class="activated" style="display:none;">
+        <h3>Account Activated Successfully!</h3>
+        <p>Your Telegram bot is now fully connected and verified.</p>
+        <button class="btn btn-small" onclick="window.location.href='dashboard.html'">
+          Open Dashboard
+        </button>
+      </div>
+
+      <div class="footer-note">
+        Need help? Watch this <a href="https://youtu.be" target="_blank">30-sec video</a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const BASE_URL = 'https://sendm.onrender.com';
+
+    const tokenInput = document.getElementById('botToken');
+    const connectBtn = document.getElementById('connectBtn');
+    const messageDiv = document.getElementById('message');
+    const stepsSection = document.getElementById('stepsSection');
+    const formSection = document.getElementById('formSection');
+    const activatedSection = document.getElementById('activatedSection');
+
+    const jwtToken = localStorage.getItem('token');
+
+    if (!jwtToken) {
+      alert('Error: Not logged in. Please log in first.');
+      window.location.href = 'login.html';
+    }
+
+    // Check if already activated on page load
+    async function checkActivationStatus() {
+      try {
+        const res = await fetch(`${BASE_URL}/api/auth/bot-status`, {
+          headers: { 'Authorization': `Bearer ${jwtToken}` }
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.activated) {
+          showActivated();
+        }
+      } catch (e) {}
+    }
+
+    function showActivated() {
+      stepsSection.style.display = 'none';
+      formSection.style.display = 'none';
+      connectBtn.style.display = 'none';
+      messageDiv.style.display = 'none';
+      activatedSection.style.display = 'block';
+    }
+
+    function showMessage(html, type = 'success') {
+      messageDiv.innerHTML = html;
+      messageDiv.className = `message ${type}`;
+      messageDiv.style.display = 'block';
+    }
+
+    function resetButton() {
+      connectBtn.disabled = false;
+      connectBtn.innerHTML = 'Connect Bot Now';
+    }
+
+    connectBtn.addEventListener('click', async () => {
+      const botToken = tokenInput.value.trim();
+
+      if (!botToken) {
+        showMessage('Please paste your bot token', 'error');
+        return;
+      }
+
+      if (!/^\d{8,}:[A-Za-z0-9_-]{35,}$/.test(botToken)) {
+        showMessage('Invalid token format. Copy it exactly from @BotFather', 'error');
+        return;
+      }
+
+      connectBtn.disabled = true;
+      connectBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Connecting...';
+
+      try {
+        const response = await fetch(`${BASE_URL}/api/auth/connect-telegram`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${jwtToken}`
+          },
+          body: JSON.stringify({ botToken })
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.startLink) {
+          showMessage(`
+            <strong>Success!</strong> Bot connected as <strong>${data.botUsername}</strong><br><br>
+            <a href="${data.startLink}" target="_blank" class="btn" style="display:inline-block;width:auto;padding:14px 30px;">
+              Tap Here to Start Bot & Activate Now
+            </a>
+            <br><br>
+            <small>After tapping, return here — page updates automatically</small>
+          `, 'success');
+
+          // Start polling for activation
+          pollForActivation();
+        } else {
+          showMessage(data.error || 'Failed to connect bot', 'error');
+          resetButton();
+        }
+      } catch (err) {
+        showMessage('Network error. Try again.', 'error');
+        resetButton();
+      }
+    });
+
+    // Poll every 3 seconds until activated
+    function pollForActivation() {
+      const interval = setInterval(async () => {
+        try {
+          const res = await fetch(`${BASE_URL}/api/auth/bot-status`, {
+            headers: { 'Authorization': `Bearer ${jwtToken}` }
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+
+          if (data.activated) {
+            clearInterval(interval);
+            showActivated();
+          }
+        } catch (e) {}
+      }, 3000);
+
+      // Stop after 5 minutes
+      setTimeout(() => clearInterval(interval), 300000);
+    }
+
+    // Check on load
+    checkActivationStatus();
+  </script>
+</body>
+</html>
