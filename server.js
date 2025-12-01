@@ -5,7 +5,6 @@ const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const rateLimit = require('express-rate-limit');
 const { Telegraf } = require('telegraf');
-const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,24 +13,21 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Rate limiter
+// Rate limiting for auth routes
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
+  windowMs: 15 * 60 * 1000, // 15 minutes
   max: 10,
   message: { error: 'Too many attempts, try again later.' }
 });
 
-// In-memory storage
+// In-memory storage (replace with DB in production)
 let users = [];
-let resetCodes = new Map();
 const activeBots = new Map();
 
-// Store activation nonces: nonce → userId (expires in 10 min)
-const ACTIVATION_NONCES = new Map();
-
 // JWT Secret
-const JWT_SECRET = process.env.JWT_SECRET || 'pX9kL2mN7qR4tV8wE3zA6bC9dF1gH5jJ0nP2sT5uY8iO3lK6mN9pQ2rE5tW8xZ';
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-change-in-production';
 
+// Email validation
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 // ========================
@@ -51,10 +47,14 @@ const authenticateToken = (req, res, next) => {
 };
 
 // ========================
-// LAUNCH USER BOT WITH NONCE SUPPORT
+// LAUNCH BOT – MATCHES ?start=USER_ID
 // ========================
-function launchUserBot(user, activationNonce = null) {
-  if (!user.telegramBotToken || activeBots.has(user.id)) return;
+function launchUserBot(user) {
+  // Stop existing bot if running
+  if (activeBots.has(user.id)) {
+    activeBots.get(user.id).stop();
+    activeBots.delete(user.id);
+  }
 
   const bot = new Telegraf(user.telegramBotToken);
 
@@ -62,35 +62,42 @@ function launchUserBot(user, activationNonce = null) {
     const payload = ctx.startPayload || '';
     const chatId = ctx.chat.id.toString();
 
-    let isValidActivation = false;
+    // Correct user opened with their own ID
+    if (payload === user.id) {
+      // Already connected to this chat?
+      if (user.isTelegramConnected && user.telegramChatId === chatId) {
+        return ctx.replyWithHTML(`Already connected!`);
+      }
 
-    // First-time activation via deep link
-    if (activationNonce && payload === `activate_${activationNonce}`) {
-      ACTIVATION_NONCES.delete(activationNonce);
-      isValidActivation = true;
-    }
-
-    // Allow manual /start if already connected or no nonce expected
-    if (!activationNonce || user.isTelegramConnected) {
-      isValidActivation = true;
-    }
-
-    if (isValidActivation && !user.isTelegramConnected) {
+      // Connect now
       user.telegramChatId = chatId;
       user.isTelegramConnected = true;
 
       await ctx.replyWithHTML(`
-<b>Sendm 2FA Activated Successfully!</b>
+<b>Sendm 2FA Connected Successfully!</b>
 
-You will now receive password reset codes here.
-<i>Keep this chat open • Never share your bot token</i>
+You will now receive secure codes here.
+
+<i>Keep this chat private • Never share your bot</i>
       `);
-      console.log(`2FA activated for \( {user.email} (chatId: \){chatId})`);
-    } else if (user.isTelegramConnected) {
+
+      console.log(`Telegram 2FA activated: \( {user.email} → \){chatId}`);
+      return;
+    }
+
+    // Wrong or no payload
+    if (user.isTelegramConnected) {
       await ctx.replyWithHTML(`
-<b>Sendm • Already Active</b>
-Your 2FA is already connected and ready.
-Use /status to check.
+<b>Sendm • Already Connected</b>
+Account: <code>${user.email}</code>
+
+Use /status anytime.
+      `);
+    } else {
+      await ctx.replyWithHTML(`
+To connect your Sendm account, open the link from the app again.
+
+Or type /status to check.
       `);
     }
   });
@@ -99,8 +106,13 @@ Use /status to check.
     ctx.replyWithHTML(`
 <b>Sendm Status</b>
 Account: <code>${user.email}</code>
-2FA Status: <b>${user.isTelegramConnected ? 'Active • Connected' : 'Not Connected'}</b>
+2FA: <b>${user.isTelegramConnected ? 'Active • Connected' : 'Not Connected'}</b>
     `);
+  });
+
+  // Prevent crashes
+  bot.catch((err) => {
+    console.error(`Bot error for ${user.email}:`, err);
   });
 
   bot.launch();
@@ -116,13 +128,15 @@ Account: <code>${user.email}</code>
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   try {
     const { fullName, email, password } = req.body;
-    if (!fullName || !email || !password) return res.status(400).json({ error: 'All fields required' });
-    if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
-    if (password.length < 6) return res.status(400).json({ error: 'Password too short' });
+    if (!fullName || !email || !password)
+      return res.status(400).json({ error: 'All fields required' });
+    if (!isValidEmail(email))
+      return res.status(400).json({ error: 'Invalid email' });
+    if (password.length < 6)
+      return res.status(400).json({ error: 'Password must be 6+ chars' });
 
-    if (users.find(u => u.email === email.toLowerCase())) {
+    if (users.find(u => u.email === email.toLowerCase()))
       return res.status(409).json({ error: 'Email already exists' });
-    }
 
     const hashedPassword = await bcrypt.hash(password, 12);
     const newUser = {
@@ -138,13 +152,22 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
 
     users.push(newUser);
 
-    const token = jwt.sign({ userId: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign(
+      { userId: newUser.id, email: newUser.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
     res.status(201).json({
       success: true,
       message: 'Account created!',
       token,
-      user: { id: newUser.id, fullName, email: newUser.email, isTelegramConnected: false }
+      user: {
+        id: newUser.id,
+        fullName,
+        email: newUser.email,
+        isTelegramConnected: false
+      }
     });
   } catch (err) {
     console.error(err);
@@ -162,7 +185,11 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign(
+      { userId: user.id, email: user.email },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
 
     res.json({
       success: true,
@@ -182,6 +209,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 // Get current user
 app.get('/api/auth/me', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
+  req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   res.json({
@@ -194,7 +222,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   });
 });
 
-// CONNECT TELEGRAM BOT + RETURN AUTO-START LINK
+// CONNECT TELEGRAM – RETURNS https://t.me/bot?start=USER_ID
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
 
@@ -206,66 +234,57 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
   try {
     const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-    if (!response.ok) {
+    const data = await response.json();
+
+    if (!response.ok || !data.ok || !data.result?.username) {
       return res.status(400).json({ error: 'Invalid bot token' });
     }
 
-    const data = await response.json();
-    if (!data.ok || !data.result?.is_bot) {
-      return res.status(400).json({ error: 'Not a valid bot token' });
-    }
-
     const botUsername = data.result.username;
-    const botUsernameAt = `@${botUsername}`;
 
     const user = users.find(u => u.id === req.user.userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    // Save token and reset state
     user.telegramBotToken = token;
     user.isTelegramConnected = false;
+    user.telegramChatId = null;
 
-    // Generate secure one-time nonce
-    const nonce = crypto.randomBytes(20).toString('hex');
-    ACTIVATION_NONCES.set(nonce, user.id);
+    // Launch bot (it will listen for ?start=USER_ID)
+    launchUserBot(user);
 
-    // Auto-remove nonce after 10 minutes
-    setTimeout(() => ACTIVATION_NONCES.delete(nonce), 10 * 60 * 1000);
-
-    // Launch bot with nonce
-    launchUserBot(user, nonce);
-
-    const startLink = `https://t.me/\( {botUsername}?start=activate_ \){nonce}`;
-
-    console.log(`Bot connected → \( {user.email} → \){botUsernameAt}`);
+    // CLEAN LINK: just the user ID
+    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
     res.json({
       success: true,
-      message: 'Bot connected! Tap to activate',
-      botUsername: botUsernameAt,
-      startLink
+      message: 'Tap to activate 2FA',
+      botUsername: `@${botUsername}`,
+      startLink // ← exactly what you wanted
     });
 
+    console.log(`Clean link sent to \( {user.email}: \){startLink}`);
+
   } catch (err) {
-    console.error('Token validation error:', err.message);
+    console.error('Connect error:', err);
     res.status(500).json({ error: 'Failed to connect bot' });
   }
 });
 
-// Check activation status (for frontend polling)
+// Check connection status (for frontend polling)
 app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   res.json({
-    activated: user.isTelegramConnected === true,
+    activated: user.isTelegramConnected,
     chatId: user.telegramChatId || null
   });
 });
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
+app.listen(PORT, () => {
   console.log(`Sendm Auth Backend running on port ${PORT}`);
-  console.log(`https://sendm.onrender.com`);
 });
 
 module.exports = app;
