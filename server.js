@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://sendm.onrender.com'],
+  origin: ['http://localhost:3000', 'https://sendmi.onrender.com'],
   credentials: true
 }));
 app.use(express.json());
