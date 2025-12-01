@@ -16,7 +16,7 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Rate limiter
+// Rate limiting
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -25,13 +25,14 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-// In-memory storage (replace with DB later)
+// In-memory storage (replace with MongoDB later)
 let users = [];
 const activeBots = new Map();
 
 // JWT Secret
-const JWT_SECRET = process.env.JWT_SECRET || 'pX9kL2mN7qR4tV8wE3zA6bC9dF1gH5jJ0nP2sT5uY8iO3lK6mN9pQ2rE5tW8xZ';
+const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-change-in-production-123456789';
 
+// Email validation
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 // ========================
@@ -50,15 +51,17 @@ const authenticateToken = (req, res, next) => {
 };
 
 // ========================
-// LAUNCH USER BOT (Plexzora style)
+// LAUNCH USER BOT — FIXED FOREVER (uses userId, not object reference)
 // ========================
-function launchUserBot(user) {
-  if (activeBots.has(user.id)) {
-    activeBots.get(user.id).stop();
-    activeBots.delete(user.id);
-  }
+function launchUserBot(userId) {
+  const user = users.find(u => u.id === userId);
+  if (!user || !user.telegramBotToken) return;
 
-  if (!user.telegramBotToken) return;
+  // Stop any old bot
+  if (activeBots.has(userId)) {
+    activeBots.get(userId).stop();
+    activeBots.delete(userId);
+  }
 
   const bot = new Telegraf(user.telegramBotToken);
 
@@ -66,38 +69,54 @@ function launchUserBot(user) {
     const payload = ctx.startPayload || '';
     const chatId = ctx.chat.id.toString();
 
-    if (payload === user.id) {
-      user.telegramChatId = chatId;
-      user.isTelegramConnected = true;
+    // Always get fresh user from array
+    const currentUser = users.find(u => u.id === userId);
+    if (!currentUser) {
+      await ctx.reply('Error: Account no longer exists.');
+      return;
+    }
+
+    if (payload === userId) {
+      currentUser.telegramChatId = chatId;
+      currentUser.isTelegramConnected = true;
 
       await ctx.replyWithHTML(`
 <b>Sendm 2FA Activated Successfully!</b>
 
-Account: <code>${user.email}</code>
+Account: <code>${currentUser.email}</code>
 You will now receive 2FA codes here.
 
-<i>Keep this chat private • Never share your bot token</i>
+<i>Keep this chat private • Never share access</i>
       `);
-      console.log(`Activated: \( {user.email} → \){chatId}`);
-    } else if (user.isTelegramConnected && chatId === user.telegramChatId) {
-      await ctx.replyWithHTML(`<b>Already connected!</b>\nWelcome back.`);
-    } else {
-      await ctx.replyWithHTML(`<b>Invalid link</b>\nGenerate a new one from dashboard.`);
+      console.log(`2FA Activated → \( {currentUser.email} | Chat: \){chatId}`);
+    }
+    else if (currentUser.isTelegramConnected && chatId === currentUser.telegramChatId) {
+      await ctx.replyWithHTML(`<b>Welcome back!</b>\nYour 2FA is already active.`);
+    }
+    else {
+      await ctx.replyWithHTML(`
+<b>Invalid or expired link</b>
+
+Generate a new one from your Sendm dashboard.
+      `);
     }
   });
 
-  bot.command('status', (ctx) => {
-    if (ctx.chat.id.toString() !== user.telegramChatId) return;
-    ctx.replyWithHTML(`
-<b>Sendm Status</b>
-Account: <code>${user.email}</code>
-2FA: <b>${user.isTelegramConnected ? 'Active' : 'Inactive'}</b>
+  bot.command('status', async (ctx) => {
+    const currentUser = users.find(u => u.id === userId);
+    if (!currentUser || ctx.chat.id.toString() !== currentUser.telegramChatId) return;
+
+    await ctx.replyWithHTML(`
+<b>Sendm • Status</b>
+
+Account: <code>${currentUser.email}</code>
+2FA: <b>${currentUser.isTelegramConnected ? 'Active' : 'Inactive'}</b>
     `);
   });
 
   bot.launch();
-  activeBots.set(user.id, bot);
-  console.log(`Bot launched for ${user.email}`);
+  activeBots.set(userId, bot);
+  console.log(`Bot launched for user \( {userId} ( \){user.email})`);
 }
 
 // ========================
@@ -114,7 +133,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
 
     const normalizedEmail = email.toLowerCase();
     if (users.find(u => u.email === normalizedEmail)) {
-      return res.status(409).json({ error: 'Email already exists' });
+      return res.status(409).json({ error: 'Email already registered' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 12);
@@ -160,7 +179,12 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
     res.json({
       success: true,
       token,
-      user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected }
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        email: user.email,
+        isTelegramConnected: user.isTelegramConnected
+      }
     });
   } catch (err) {
     console.error('Login error:', err);
@@ -183,7 +207,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   });
 });
 
-// CONNECT TELEGRAM — 100% PLEXZORA FORMAT (FIXED!)
+// CONNECT TELEGRAM — 100% PLEXZORA FORMAT + FIXED FOREVER
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const botToken = req.body.botToken?.trim();
 
@@ -192,7 +216,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   }
 
   try {
-    // Validate token
+    // Validate bot token
     const response = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
     const data = await response.json();
 
@@ -215,29 +239,29 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
     user.isTelegramConnected = false;
     user.telegramChatId = null;
 
-    // Launch bot
-    launchUserBot(user);
+    // Launch bot using user ID (safe across restarts)
+    launchUserBot(user.id);
 
-    // EXACTLY LIKE PLEXZORA
+    // EXACT PLEXZORA MAGIC LINK FORMAT
     const telegramLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
-    console.log(`Plexzora-style link generated: ${telegramLink}`);
+    console.log(`Magic link generated → ${telegramLink}`);
 
     res.json({
       success: true,
-      message: 'Click the link to activate Telegram 2FA',
+      message: 'Bot connected! Tap the link to activate 2FA',
       botUsername: `@${botUsername}`,
-      telegramLink,
-      instructions: 'Tap link → Press START → Done!'
+      telegramLink,        // 100% same as Plexzora
+      instructions: 'Click link → Tap START → Done!'
     });
 
   } catch (err) {
-    console.error('Connect Telegram error:', err.message);
+    console.error('Connect error:', err.message);
     res.status(500).json({ error: 'Failed to connect bot' });
   }
 });
 
-// Check status
+// Check connection status
 app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -248,7 +272,7 @@ app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
   });
 });
 
-// Disconnect
+// Disconnect Telegram
 app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
@@ -262,12 +286,13 @@ app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
   user.telegramChatId = null;
   user.isTelegramConnected = false;
 
-  res.json({ success: true, message: 'Telegram disconnected' });
+  res.json({ success: true, message: 'Telegram disconnected successfully' });
 });
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Sendm Backend Running on https://sendm.onrender.com`);
+  console.log(`Sendm Backend Running`);
+  console.log(`https://sendm.onrender.com`);
   console.log(`Local: http://localhost:${PORT}`);
 });
 
