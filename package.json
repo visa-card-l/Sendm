@@ -1,28 +1,39 @@
 {
-  "name": "sendm-backend",
+  "name": "sendm-2fa-server",
   "version": "1.0.0",
-  "description": "Sendm – Telegram 2FA Backend (works like Plexzora, Blum, Hamster)",
-  "main": "index.js",
+  "description": "Personal Telegram 2FA delivery server for Sendm users",
+  "main": "server.js",
+  "type": "commonjs",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "pm2": "pm2 start server.js --name sendm-2fa",
+    "restart": "pm2 restart sendm-2fa",
+    "logs": "pm2 logs sendm-2fa"
   },
-  "keywords": ["telegram", "2fa", "bot", "telegraf", "express"],
-  "author": "you",
+  "keywords": [
+    "2fa",
+    "telegram",
+    "telegraf",
+    "express",
+    "jwt",
+    "authentication"
+  ],
+  "author": "Your Name <you@example.com>",
   "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
-    "express": "^4.latest",
-    "express-rate-limit": "^7.4.0",
+    "express": "^4.21.1",
+    "express-rate-limit": "^7.4.1",
     "jsonwebtoken": "^9.0.2",
-    "node-fetch": "^2.7.0",
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "uuid": "^10.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.7"
-  },
-  "engines": {
-    "node": ">=18.x"
   }
 }
