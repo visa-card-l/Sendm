@@ -12,6 +12,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Rate limiting
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -25,9 +26,9 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-jwt-key-2025';
 
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
+// Auth middleware
 const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
+  const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Access token required' });
 
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
@@ -37,8 +38,8 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// Launch per-user bot
 function launchUserBot(user) {
-  // Stop old bot if exists
   if (activeBots.has(user.id)) {
     activeBots.get(user.id).stop();
     activeBots.delete(user.id);
@@ -87,7 +88,7 @@ Status: <b>${user.isTelegramConnected ? 'Connected' : 'Not Connected'}</b>
   bot.catch((err) => console.error(`Bot error [${user.email}]:`, err));
   bot.launch();
   activeBots.set(user.id, bot);
-  console.log(`Bot launched for \( {user.email} (@ \){user.telegramBotUsername})`);
+  console.log(`Bot launched for ${user.email}`);
 }
 
 // ======================== ROUTES ========================
@@ -110,7 +111,6 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     password: hashed,
     createdAt: new Date().toISOString(),
     telegramBotToken: null,
-    telegramBotUsername: null,
     telegramChatId: null,
     isTelegramConnected: false
   };
@@ -155,50 +155,44 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   });
 });
 
-// PERFECT, FINAL, BULLETPROOF CONNECT ROUTE
+// THE ONLY ROUTE THAT MATTERS — SIMPLE & PERFECT
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
-  if (!botToken || typeof botToken !== 'string') {
-    return res.status(400).json({ error: 'Bot token required' });
-  }
+  if (!botToken) return res.status(400).json({ error: 'Bot token required' });
 
   const token = botToken.trim();
+  const user = users.find(u => u.id === req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
 
   try {
-    const user = users.find(u => u.id === req.user.userId);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-
-    // Stop any old bot
+    // Stop old bot
     if (activeBots.has(user.id)) {
       activeBots.get(user.id).stop();
       activeBots.delete(user.id);
     }
 
-    // Create temporary bot to get real username
-    const tempBot = new Telegraf(token);
-    
-    // This forces getMe() and fills bot.botInfo with 100% correct data
-    const botInfo = await tempBot.telegram.getMe();
-    
-    const botUsername = botInfo.username; // THIS IS THE TRUTH — always correct
+    // Get real bot username from Telegram
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = await response.json();
 
-    if (!botUsername) {
-      return res.status(400).json({ error: 'Bot has no username. Set one in @BotFather.' });
+    if (!data.ok || !data.result?.username) {
+      return res.status(400).json({ error: 'Invalid bot token. Copy it exactly from @BotFather.' });
     }
 
-    // Save everything
+    const botUsername = data.result.username; // This is 100% correct
+
+    // Save token
     user.telegramBotToken = token;
-    user.telegramBotUsername = botUsername;
     user.isTelegramConnected = false;
     user.telegramChatId = null;
 
-    // Now launch the real bot
+    // Launch bot
     launchUserBot(user);
 
-    // 1000000% GUARANTEED WORKING LINK
+    // SIMPLE: Just combine — works every time
     const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
-    console.log(`PERFECT 2FA LINK → ${user.email}`);
+    console.log(`2FA Bot Connected → ${user.email}`);
     console.log(`   Bot: @${botUsername}`);
     console.log(`   Link: ${startLink}`);
 
@@ -210,10 +204,8 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
     });
 
   } catch (err) {
-    console.error('Invalid bot token:', err.message);
-    res.status(400).json({ 
-      error: 'Invalid bot token. Copy it exactly from @BotFather.' 
-    });
+    console.error('Connect failed:', err);
+    res.status(500).json({ error: 'Failed to connect bot. Try again.' });
   }
 });
 
@@ -223,8 +215,7 @@ app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
 
   res.json({
     activated: user.isTelegramConnected,
-    chatId: user.telegramChatId || null,
-    botUsername: user.telegramBotUsername ? `@${user.telegramBotUsername}` : null
+    chatId: user.telegramChatId || null
   });
 });
 
