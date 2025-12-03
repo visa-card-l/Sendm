@@ -5,20 +5,48 @@ const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const rateLimit = require('express-rate-limit');
 const { Telegraf } = require('telegraf');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
+// === CONFIG ===
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.static('public')); // for future static files
+app.use(cors({
+  origin: ['http://localhost:3000', 'https://sendmi.onrender.com'],
+  credentials: true
+}));
 app.use(express.json());
 
-// === STORAGE & SECURITY ===
-const JWT_SECRET = 'sendm2fa_ultra_secure_jwt_2025!@#$%^&*()_+-=9876543210zyxwvutsrqponmlkjihgfedcba';
+// === SECURITY ===
+const JWT_SECRET = process.env.JWT_SECRET || 'sendm2fa_ultra_secure_jwt_2025!@#$%^&*()_+-=9876543210zyxwvutsrqponmlkjihgfedcba';
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Too many attempts' } });
 
+// === IN-MEMORY STORAGE ===
 let users = [];
 const activeBots = new Map();
 const resetTokens = new Map();
+
+// === DEFAULT EDITOR HTML ===
+const defaultEditorHTML = `
+<h2 class="editable" contenteditable="true">Get 50% Off Your First Order</h2>
+<p class="editable" contenteditable="true">Limited time offer! Join thousands of happy customers and start saving today.</p>
+
+<div class="image-container">
+  <img src="https://picsum.photos/600/400" alt="Hero" class="landing-image" id="landingImage">
+  <br>
+  <button class="add-image-btn" id="heroImageBtn">Add / Change Image</button>
+</div>
+
+<div class="cta-wrapper">
+  <a href="#" class="cta-button editable" contenteditable="true" id="ctaButton">Claim Your Discount Now</a>
+</div>
+
+<button class="add-block-btn" id="addBlockBtn">
+  <i class="fas fa-plus-circle" style="margin-right:10px;"></i>Add New Block
+</button>`.trim();
 
 // === HELPERS ===
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -93,15 +121,14 @@ const authenticateToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Access token required' });
 
-  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+  jwt.verify(token, JWT_SECRET, (err, newborn) => {
     if (err) return res.status(403).json({ error: 'Invalid or expired token' });
-    req.user = decoded;
+    req.user = newborn;
     next();
   });
 };
 
 // === ROUTES ===
-
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { fullName, email, password } = req.body;
   if (!fullName || !email || !password) return res.status(400).json({ error: 'All fields required' });
@@ -118,7 +145,8 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     createdAt: new Date().toISOString(),
     telegramBotToken: null,
     telegramChatId: null,
-    isTelegramConnected: false
+    isTelegramConnected: false,
+    landingConfig: null
   };
 
   users.push(newUser);
@@ -146,185 +174,71 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   });
 });
 
-app.get('/api/auth/me', authenticateToken, (req, res) => {
+// EDITOR: Load config
+app.get('/api/editor/load', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected } });
+  res.json({ html: user.landingConfig || defaultEditorHTML });
 });
 
-// CONNECT TELEGRAM (FIRST TIME)
-app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
-  const { botToken } = req.body;
-  if (!botToken?.trim()) return res.status(400).json({ error: 'Bot token required' });
-
-  const token = botToken.trim();
+// EDITOR: Save config
+app.post('/api/editor/save', authenticateToken, (req, res) => {
+  const { html } = req.body;
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  try {
-    if (activeBots.has(user.id)) {
-      activeBots.get(user.id).stop();
-      activeBots.delete(user.id);
-    }
-
-    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-    const data = await response.json();
-
-    if (!data.ok || !data.result?.username)
-      return res.status(400).json({ error: 'Invalid bot token or no username set' });
-
-    const botUsername = data.result.username.replace(/^@/, '');
-
-    user.telegramBotToken = token;
-    user.isTelegramConnected = false;
-    user.telegramChatId = null;
-
-    launchUserBot(user);
-
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
-
-    res.json({
-      success: true,
-      message: 'Bot connected! Tap to activate.',
-      botUsername: '@' + botUsername,
-      startLink
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to connect to Telegram' });
-  }
+  user.landingConfig = html.trim();
+  res.json({ success: true, message: 'Saved' });
 });
 
-// CHANGE BOT TOKEN
-app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
-  const { newBotToken } = req.body;
-  if (!newBotToken?.trim()) return res.status(400).json({ error: 'New bot token required' });
-
-  const token = newBotToken.trim();
+// Serve Live Editor (EJS)
+app.get('/editor', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!user) return res.redirect('/login');
 
-  try {
-    if (activeBots.has(user.id)) {
-      activeBots.get(user.id).stop();
-      activeBots.delete(user.id);
-    }
-
-    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-    const data = await response.json();
-
-    if (!data.ok || !data.result?.username)
-      return res.status(400).json({ error: 'Invalid bot token' });
-
-    const botUsername = data.result.username.replace(/^@/, '');
-
-    user.telegramBotToken = token;
-    user.isTelegramConnected = false;
-    user.telegramChatId = null;
-
-    launchUserBot(user);
-
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
-
-    res.json({
-      success: true,
-      message: 'Bot token changed! Click link to activate.',
-      botUsername: '@' + botUsername,
-      startLink
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to validate new token' });
-  }
-});
-
-// DELETE / DISCONNECT BOT
-app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  if (activeBots.has(user.id)) {
-    activeBots.get(user.id).stop();
-    activeBots.delete(user.id);
-  }
-
-  user.telegramBotToken = null;
-  user.telegramChatId = null;
-  user.isTelegramConnected = false;
-
-  res.json({
-    success: true,
-    message: 'Bot disconnected and token deleted',
-    isTelegramConnected: false
+  res.render('editor', {
+    config: user.landingConfig || defaultEditorHTML,
+    apiUrl: 'https://sendm.onrender.com/api/editor'
   });
 });
 
-app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ activated: user.isTelegramConnected, chatId: user.telegramChatId || null });
+// Simple login page (optional)
+app.get('/login', (req, res) => {
+  res.send(`
+    <h2>Login to Sendm</h2>
+    <form action="/api/auth/login" method="POST">
+      <input type="email" name="email" placeholder="Email" required /><br><br>
+      <input type="password" name="password" placeholder="Password" required /><br><br>
+      <button type="submit">Login</button>
+    </form>
+    <p><a href="/register">Register</a></p>
+    <script>
+      const form = document.querySelector('form');
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const res = await fetch(form.action, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.fromEntries(new FormData(form)))
+        });
+        const data = await res.json();
+        if (data.token) {
+          localStorage.setItem('jwt', data.token);
+          window.location.href = '/editor';
+        } else {
+          alert('Login failed');
+        }
+      };
+    </script>
+  `);
 });
 
-// PASSWORD RESET FLOW
-app.post('/api/auth/forgot-password', async (req, res) => {
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: 'Email required' });
-
-  const user = users.find(u => u.email === email.toLowerCase());
-  if (!user) return res.json({ success: true, message: 'If account exists, code was sent.' });
-
-  if (!user.isTelegramConnected) {
-    return res.status(400).json({ error: 'Telegram 2FA not connected.' });
-  }
-
-  const code = generate2FACode();
-  const resetToken = uuidv4();
-  const expiresAt = Date.now() + 10 * 60 * 1000;
-
-  resetTokens.set(resetToken, { userId: user.id, code, expiresAt });
-
-  const sent = await send2FACodeViaBot(user, code);
-  if (!sent) return res.status(500).json({ error: 'Failed to send code' });
-
-  res.json({ success: true, message: 'Code sent!', resetToken });
+app.get('/', (req, res) => {
+  res.send(`<h1>Sendm 2FA + Editor Live at <a href="https://sendm.onrender.com/editor">/editor</a></h1>`);
 });
 
-app.post('/api/auth/verify-reset-code', (req, res) => {
-  const { resetToken, code } = req.body;
-  if (!resetToken || !code) return res.status(400).json({ error: 'Token and code required' });
-
-  const entry = resetTokens.get(resetToken);
-  if (!entry || Date.now() > entry.expiresAt) {
-    resetTokens.delete(resetToken);
-    return res.status(400).json({ error: 'Invalid or expired code' });
-  }
-
-  if (entry.code !== code.trim()) {
-    return res.status(400).json({ error: 'Wrong code' });
-  }
-
-  res.json({ success: true, message: 'Verified', userId: entry.userId });
-});
-
-app.post('/api/auth/reset-password', (req, res) => {
-  const { resetToken, newPassword } = req.body;
-  if (!resetToken || !newPassword || newPassword.length < 6)
-    return res.status(400).json({ error: 'Valid token and password required' });
-
-  const entry = resetTokens.get(resetToken);
-  if (!entry || Date.now() > entry.expiresAt) {
-    resetTokens.delete(resetToken);
-    return res.status(400).json({ error: 'Invalid session' });
-  }
-
-  const user = users.find(u => u.id === entry.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  user.password = bcrypt.hashSync(newPassword, 12);
-  resetTokens.delete(resetToken);
-
-  res.json({ success: true, message: 'Password reset successful' });
-});
-
+// === START SERVER ===
 app.listen(PORT, () => {
-  console.log(`Sendm 2FA Server running on http://localhost:${PORT}`);
-  console.log(`Features: Change/Delete Bot Token Working`);
+  console.log(`Sendm Live Editor Running → https://sendm.onrender.com/editor`);
+  console.log(`API: https://sendm.onrender.com/api/editor`);
 });
