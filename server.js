@@ -12,16 +12,15 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// === SECURITY & STORAGE ===
+// === STORAGE & SECURITY ===
 const JWT_SECRET = 'sendm2fa_ultra_secure_jwt_2025!@#$%^&*()_+-=9876543210zyxwvutsrqponmlkjihgfedcba';
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Too many attempts' } });
 
-// In-memory (replace with database in production)
 let users = [];
 const activeBots = new Map();
-const resetTokens = new Map(); // resetToken → { userId, code, expiresAt }
+const resetTokens = new Map();
 
-// === HELPER FUNCTIONS ===
+// === HELPERS ===
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
 function generate2FACode() {
@@ -33,14 +32,13 @@ async function send2FACodeViaBot(user, code) {
   const bot = activeBots.get(user.id);
   try {
     await bot.telegram.sendMessage(user.telegramChatId, `
-🔐 Password Reset Code
+Security Alert – Password Reset
 
-Your verification code:
+Your 6-digit code:
 
 <b>${code}</b>
 
 Valid for 10 minutes.
-Never share this code.
     `.trim(), { parse_mode: 'HTML' });
     return true;
   } catch (err) {
@@ -104,7 +102,6 @@ const authenticateToken = (req, res, next) => {
 
 // === ROUTES ===
 
-// REGISTER
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { fullName, email, password } = req.body;
   if (!fullName || !email || !password) return res.status(400).json({ error: 'All fields required' });
@@ -134,7 +131,6 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
   });
 });
 
-// LOGIN
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   const user = users.find(u => u.email === email.toLowerCase());
@@ -150,14 +146,13 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   });
 });
 
-// ME
 app.get('/api/auth/me', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json({ user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected } });
 });
 
-// CONNECT TELEGRAM BOT
+// CONNECT TELEGRAM (FIRST TIME)
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
   if (!botToken?.trim()) return res.status(400).json({ error: 'Bot token required' });
@@ -179,6 +174,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Invalid bot token or no username set' });
 
     const botUsername = data.result.username.replace(/^@/, '');
+
     user.telegramBotToken = token;
     user.isTelegramConnected = false;
     user.telegramChatId = null;
@@ -198,43 +194,99 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   }
 });
 
-// BOT STATUS
+// CHANGE BOT TOKEN
+app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
+  const { newBotToken } = req.body;
+  if (!newBotToken?.trim()) return res.status(400).json({ error: 'New bot token required' });
+
+  const token = newBotToken.trim();
+  const user = users.find(u => u.id === req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  try {
+    if (activeBots.has(user.id)) {
+      activeBots.get(user.id).stop();
+      activeBots.delete(user.id);
+    }
+
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = await response.json();
+
+    if (!data.ok || !data.result?.username)
+      return res.status(400).json({ error: 'Invalid bot token' });
+
+    const botUsername = data.result.username.replace(/^@/, '');
+
+    user.telegramBotToken = token;
+    user.isTelegramConnected = false;
+    user.telegramChatId = null;
+
+    launchUserBot(user);
+
+    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
+
+    res.json({
+      success: true,
+      message: 'Bot token changed! Click link to activate.',
+      botUsername: '@' + botUsername,
+      startLink
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to validate new token' });
+  }
+});
+
+// DELETE / DISCONNECT BOT
+app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
+  const user = users.find(u => u.id === req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  if (activeBots.has(user.id)) {
+    activeBots.get(user.id).stop();
+    activeBots.delete(user.id);
+  }
+
+  user.telegramBotToken = null;
+  user.telegramChatId = null;
+  user.isTelegramConnected = false;
+
+  res.json({
+    success: true,
+    message: 'Bot disconnected and token deleted',
+    isTelegramConnected: false
+  });
+});
+
 app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json({ activated: user.isTelegramConnected, chatId: user.telegramChatId || null });
 });
 
-// === PASSWORD RESET WITH TELEGRAM 2FA ===
-
-// 1. Request reset → sends 6-digit code to Telegram
+// PASSWORD RESET FLOW
 app.post('/api/auth/forgot-password', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
 
   const user = users.find(u => u.email === email.toLowerCase());
-  if (!user) {
-    return res.json({ success: true, message: 'If account exists, a code was sent.' });
-  }
+  if (!user) return res.json({ success: true, message: 'If account exists, code was sent.' });
 
   if (!user.isTelegramConnected) {
-    return res.status(400).json({ error: 'Telegram 2FA not connected. Cannot reset password.' });
+    return res.status(400).json({ error: 'Telegram 2FA not connected.' });
   }
 
   const code = generate2FACode();
   const resetToken = uuidv4();
-  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 min
+  const expiresAt = Date.now() + 10 * 60 * 1000;
 
   resetTokens.set(resetToken, { userId: user.id, code, expiresAt });
 
   const sent = await send2FACodeViaBot(user, code);
-  if (!sent) return res.status(500).json({ error: 'Failed to send code. Bot offline?' });
+  if (!sent) return res.status(500).json({ error: 'Failed to send code' });
 
-  console.log(`Reset code for \( {user.email}: \){code}`);
   res.json({ success: true, message: 'Code sent!', resetToken });
 });
 
-// 2. Verify code
 app.post('/api/auth/verify-reset-code', (req, res) => {
   const { resetToken, code } = req.body;
   if (!resetToken || !code) return res.status(400).json({ error: 'Token and code required' });
@@ -246,22 +298,21 @@ app.post('/api/auth/verify-reset-code', (req, res) => {
   }
 
   if (entry.code !== code.trim()) {
-    return res.status(400).json({ error: 'Incorrect code' });
+    return res.status(400).json({ error: 'Wrong code' });
   }
 
-  res.json({ success: true, message: 'Code verified', userId: entry.userId });
+  res.json({ success: true, message: 'Verified', userId: entry.userId });
 });
 
-// 3. Reset password
 app.post('/api/auth/reset-password', (req, res) => {
   const { resetToken, newPassword } = req.body;
   if (!resetToken || !newPassword || newPassword.length < 6)
-    return res.status(400).json({ error: 'Valid token and strong password required' });
+    return res.status(400).json({ error: 'Valid token and password required' });
 
   const entry = resetTokens.get(resetToken);
   if (!entry || Date.now() > entry.expiresAt) {
     resetTokens.delete(resetToken);
-    return res.status(400).json({ error: 'Invalid or expired session' });
+    return res.status(400).json({ error: 'Invalid session' });
   }
 
   const user = users.find(u => u.id === entry.userId);
@@ -270,12 +321,10 @@ app.post('/api/auth/reset-password', (req, res) => {
   user.password = bcrypt.hashSync(newPassword, 12);
   resetTokens.delete(resetToken);
 
-  console.log(`Password reset successful for ${user.email}`);
-  res.json({ success: true, message: 'Password changed!' });
+  res.json({ success: true, message: 'Password reset successful' });
 });
 
-// START SERVER
 app.listen(PORT, () => {
-  console.log(`🚀 Sendm 2FA Server RUNNING on http://localhost:${PORT}`);
-  console.log(`🔐 Telegram Password Reset + Magic Links = FULLY WORKING`);
+  console.log(`Sendm 2FA Server running on http://localhost:${PORT}`);
+  console.log(`Features: Change/Delete Bot Token Working`);
 });
