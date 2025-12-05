@@ -11,6 +11,12 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Force HTTPS in production (Render, Railway, Vercel, etc.)
+const IS_PRODUCTION = process.env.NODE_ENV === 'production';
+
+// Trust proxy for correct protocol/host behind reverse proxies
+app.set('trust proxy', 1);
+
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
@@ -18,9 +24,13 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// === STORAGE & SECURITY ===
+// === SECURITY & STORAGE ===
 const JWT_SECRET = 'sendm2fa_ultra_secure_jwt_2025!@#$%^&*()_+-=9876543210zyxwvutsrqponmlkjihgfedcba';
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Too many attempts' } });
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many attempts, try again later.' }
+});
 
 let users = [];
 const activeBots = new Map();
@@ -106,6 +116,13 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// === EXACT SAME URL LOGIC AS YOUR FIRST PROJECT ===
+function getFullUrl(req, path = '') {
+  const protocol = IS_PRODUCTION ? 'https' : req.protocol;
+  const host = req.get('host') || `localhost:${PORT}`;
+  return `\( {protocol}:// \){host}${path}`;
+}
+
 // === AUTH ROUTES ===
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { fullName, email, password } = req.body;
@@ -185,7 +202,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
     launchUserBot(user);
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
+    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
     res.json({
       success: true,
@@ -226,7 +243,7 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
     launchUserBot(user);
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
+    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
     res.json({
       success: true,
@@ -325,7 +342,7 @@ app.post('/api/auth/reset-password', (req, res) => {
   res.json({ success: true, message: 'Password reset successful' });
 });
 
-// === LANDING PAGE API ===
+// === LANDING PAGES – WITH PERFECT URL LOGIC ===
 app.get('/api/pages', authenticateToken, (req, res) => {
   const userPages = Array.from(landingPages.entries())
     .filter(([_, page]) => page.userId === req.user.userId)
@@ -334,7 +351,7 @@ app.get('/api/pages', authenticateToken, (req, res) => {
       title: page.title,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
-      url: `\( {req.protocol}:// \){req.get('host')}/p/${shortId}`
+      url: getFullUrl(req, `/p/${shortId}`)  // EXACT same logic as your first app
     }));
   res.json({ pages: userPages });
 });
@@ -357,7 +374,7 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
   res.json({
     success: true,
     shortId: finalShortId,
-    url: `\( {req.protocol}:// \){req.get('host')}/p/${finalShortId}`
+    url: getFullUrl(req, `/p/${finalShortId}`)  // Always correct: http://localhost:3000 or https://yourapp.onrender.com
   });
 });
 
@@ -377,10 +394,12 @@ app.get('/p/:shortId', (req, res) => {
   res.render('landing', { title: page.title, config: JSON.stringify(page.config) });
 });
 
-// === AUTO-CREATE VIEWS ===
+// === CREATE VIEWS FOLDER & TEMPLATES ===
 const viewsDir = path.join(__dirname, 'views');
+const publicDir = path.join(__dirname, 'public');
+
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
-if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
+if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
 
 const landingTemplate = `<!DOCTYPE html>
 <html lang="en">
@@ -418,17 +437,24 @@ const landingTemplate = `<!DOCTYPE html>
 </body>
 </html>`;
 
-const notFoundTemplate = `<!DOCTYPE html><html><head><title>404</title></head><body style="font-family:sans-serif;text-align:center;padding:100px;background:#f8f9fa;"><h1>404</h1><p>Page not found</p></body></html>`;
+const notFoundTemplate = `<!DOCTYPE html>
+<html><head><title>404 - Not Found</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:100px;background:#f8f9fa;">
+  <h1>404</h1><p>Page not found</p>
+</body></html>`;
 
 if (!fs.existsSync(path.join(viewsDir, 'landing.ejs'))) {
   fs.writeFileSync(path.join(viewsDir, 'landing.ejs'), landingTemplate);
   fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundTemplate);
-  console.log('Created EJS templates');
+  console.log('Created landing.ejs and 404.ejs templates');
 }
 
+// 404 handler
 app.use((req, res) => res.status(404).render('404'));
 
+// Start server
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`Published pages → /p/shortid`);
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Local: http://localhost:${PORT}`);
+  console.log(`Production pages → https://your-domain.com/p/yourshortid`);
 });
