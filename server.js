@@ -11,10 +11,8 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Force HTTPS in production (Render, Railway, Vercel, etc.)
+// Force HTTPS in production + trust proxy (Render, Railway, Vercel, etc.)
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
-
-// Trust proxy for correct protocol/host behind reverse proxies
 app.set('trust proxy', 1);
 
 app.set('view engine', 'ejs');
@@ -47,18 +45,15 @@ async function send2FACodeViaBot(user, code) {
   if (!user.isTelegramConnected || !user.telegramChatId || !activeBots.has(user.id)) return false;
   const bot = activeBots.get(user.id);
   try {
-    await bot.telegram.sendMessage(user.telegramChatId, `
-Security Alert – Password Reset
-
-Your 6-digit code:
-
-<b>${code}</b>
-
-Valid for 10 minutes.
-    `.trim(), { parse_mode: 'HTML' });
+    await bot.telegram.sendMessage(user.telegramChatId, 
+      'Security Alert – Password Reset\n\n' +
+      'Your 6-digit code:\n\n' +
+      '<b>' + code + '</b>\n\n' +
+      'Valid for 10 minutes.'
+    , { parse_mode: 'HTML' });
     return true;
   } catch (err) {
-    console.error(`Failed to send code to ${user.email}:`, err.message);
+    console.error('Failed to send code to ' + user.email + ':', err.message);
     return false;
   }
 }
@@ -78,28 +73,26 @@ function launchUserBot(user) {
     if (payload === user.id) {
       user.telegramChatId = chatId;
       user.isTelegramConnected = true;
-      await ctx.replyWithHTML(`
-<b>Sendm 2FA Connected Successfully!</b>
-
-You will now receive login & recovery codes here.
-
-<i>Keep this chat private • Never share your bot</i>
-      `);
-      console.log(`2FA Connected: \( {user.email} → \){chatId}`);
+      await ctx.replyWithHTML(
+        '<b>Sendm 2FA Connected Successfully!</b>\n\n' +
+        'You will now receive login & recovery codes here.\n\n' +
+        '<i>Keep this chat private • Never share your bot</i>'
+      );
+      console.log('2FA Connected: ' + user.email + ' → ' + chatId);
     } else {
-      await ctx.replyWithHTML(`<b>Invalid or expired link</b>\nThis link can only be used once.`);
+      await ctx.replyWithHTML('<b>Invalid or expired link</b>\nThis link can only be used once.');
     }
   });
 
   bot.command('status', (ctx) => {
-    ctx.replyWithHTML(`
-<b>Sendm 2FA Status</b>
-Account: <code>${user.email}</code>
-Status: <b>${user.isTelegramConnected ? 'Connected' : 'Not Connected'}</b>
-    `);
+    ctx.replyWithHTML(
+      '<b>Sendm 2FA Status</b>\n' +
+      'Account: <code>' + user.email + '</code>\n' +
+      'Status: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>'
+    );
   });
 
-  bot.catch((err) => console.error(`Bot error [${user.email}]:`, err));
+  bot.catch((err) => console.error('Bot error [' + user.email + ']:', err));
   bot.launch();
   activeBots.set(user.id, bot);
 }
@@ -116,11 +109,11 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// === EXACT SAME URL LOGIC AS YOUR FIRST PROJECT ===
-function getFullUrl(req, path = '') {
+// === URL HELPER (same as your first project) ===
+function getFullUrl(req, path) {
   const protocol = IS_PRODUCTION ? 'https' : req.protocol;
-  const host = req.get('host') || `localhost:${PORT}`;
-  return `\( {protocol}:// \){host}${path}`;
+  const host = req.get('host') || 'localhost:' + PORT;
+  return protocol + '://' + host + (path || '');
 }
 
 // === AUTH ROUTES ===
@@ -174,6 +167,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   res.json({ user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected } });
 });
 
+// CONNECT TELEGRAM BOT — YOUR EXACT STYLE
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
   if (!botToken?.trim()) return res.status(400).json({ error: 'Bot token required' });
@@ -188,7 +182,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
       activeBots.delete(user.id);
     }
 
-    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
     const data = await response.json();
 
     if (!data.ok || !data.result?.username)
@@ -202,7 +196,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
     launchUserBot(user);
 
-    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
+    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
 
     res.json({
       success: true,
@@ -215,6 +209,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   }
 });
 
+// CHANGE BOT TOKEN — SAME CLEAN STYLE
 app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   const { newBotToken } = req.body;
   if (!newBotToken?.trim()) return res.status(400).json({ error: 'New bot token required' });
@@ -229,7 +224,7 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
       activeBots.delete(user.id);
     }
 
-    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
     const data = await response.json();
 
     if (!data.ok || !data.result?.username)
@@ -243,7 +238,7 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
     launchUserBot(user);
 
-    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
+    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
 
     res.json({
       success: true,
@@ -342,17 +337,21 @@ app.post('/api/auth/reset-password', (req, res) => {
   res.json({ success: true, message: 'Password reset successful' });
 });
 
-// === LANDING PAGES – WITH PERFECT URL LOGIC ===
+// === LANDING PAGES ===
 app.get('/api/pages', authenticateToken, (req, res) => {
   const userPages = Array.from(landingPages.entries())
-    .filter(([_, page]) => page.userId === req.user.userId)
-    .map(([shortId, page]) => ({
-      shortId,
-      title: page.title,
-      createdAt: page.createdAt,
-      updatedAt: page.updatedAt,
-      url: getFullUrl(req, `/p/${shortId}`)  // EXACT same logic as your first app
-    }));
+    .filter(function(entry) { return entry[1].userId === req.user.userId; })
+    .map(function(entry) {
+      const shortId = entry[0];
+      const page = entry[1];
+      return {
+        shortId: shortId,
+        title: page.title,
+        createdAt: page.createdAt,
+        updatedAt: page.updatedAt,
+        url: getFullUrl(req, '/p/' + shortId)
+      };
+    });
   res.json({ pages: userPages });
 });
 
@@ -366,7 +365,7 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
   landingPages.set(finalShortId, {
     userId: req.user.userId,
     title: title.trim(),
-    config,
+    config: config,
     createdAt: landingPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
@@ -374,7 +373,7 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
   res.json({
     success: true,
     shortId: finalShortId,
-    url: getFullUrl(req, `/p/${finalShortId}`)  // Always correct: http://localhost:3000 or https://yourapp.onrender.com
+    url: getFullUrl(req, '/p/' + finalShortId)
   });
 });
 
@@ -394,67 +393,27 @@ app.get('/p/:shortId', (req, res) => {
   res.render('landing', { title: page.title, config: JSON.stringify(page.config) });
 });
 
-// === CREATE VIEWS FOLDER & TEMPLATES ===
+// === CREATE VIEWS & PUBLIC FOLDERS ===
 const viewsDir = path.join(__dirname, 'views');
 const publicDir = path.join(__dirname, 'public');
 
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
 if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
 
-const landingTemplate = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title><%= title %></title>
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
-  <style>
-    :root{--primary:#1564C0;--primary-light:#3485e5;--gray-600:#6c757d;--gray-800:#343a40;}
-    *{margin:0;padding:0;box-sizing:border-box;}
-    body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f4f8;padding:40px 20px;line-height:1.6;}
-    .wrapper{max-width:580px;margin:0 auto;background:white;border-radius:20px;overflow:hidden;box-shadow:0 15px 45px rgba(0,0,0,0.15);padding:44px 40px;text-align:center;}
-    h2{font-size:34px;font-weight:700;color:var(--gray-800);margin-bottom:16px;}
-    p{font-size:17px;color:var(--gray-600);margin-bottom:32px;}
-    .landing-image{max-width:100%;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,0.12);margin:40px 0;}
-    .cta-button{display:inline-block;padding:18px 50px;font-size:18px;font-weight:600;background:var(--primary);color:white;border:none;border-radius:14px;text-decoration:none;box-shadow:0 10px 30px rgba(21,100,192,0.35);transition:all .3s;}
-    .cta-button:hover{background:var(--primary-light);transform:translateY(-3px);}
-    .form-block{padding:32px;background:#f9fbff;border-radius:16px;margin:40px 0;}
-    .form-block input,.form-block button{width:100%;padding:16px;margin:10px 0;border-radius:10px;border:1px solid #ddd;}
-    .form-block button{background:var(--primary);color:white;border:none;font-weight:600;cursor:pointer;}
-  </style>
-</head>
-<body>
-  <div class="wrapper" id="landingRoot"></div>
-  <script>
-    const config = <%= config %>;
-    const root = document.getElementById('landingRoot');
-    config.blocks.forEach(b => {
-      if (b.type==='text'){const el=document.createElement(b.tag||'p');el.innerHTML=b.content;root.appendChild(el);}
-      if (b.type==='image'){const div=document.createElement('div');div.style.textAlign='center';const img=document.createElement('img');img.src=b.src;img.className='landing-image';div.appendChild(img);root.appendChild(div);}
-      if (b.type==='button'){const a=document.createElement('a');a.href=b.href;a.className='cta-button';a.textContent=b.text;a.target='_blank';root.appendChild(a);}
-      if (b.type==='form'){const div=document.createElement('div');div.className='form-block';div.innerHTML=b.html;root.appendChild(div);}
-    });
-  </script>
-</body>
-</html>`;
+const landingTemplate = '<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">\n  <title><%= title %></title>\n  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>\n  <style>\n    :root{--primary:#1564C0;--primary-light:#3485e5;--gray-600:#6c757d;--gray-800:#343a40;}\n    *{margin:0;padding:0;box-sizing:border-box;}\n    body{font-family:\'Segoe UI\',Arial,sans-serif;background:#f0f4f8;padding:40px 20px;line-height:1.6;}\n    .wrapper{max-width:580px;margin:0 auto;background:white;border-radius:20px;overflow:hidden;box-shadow:0 15px 45px rgba(0,0,0,0.15);padding:44px 40px;text-align:center;}\n    h2{font-size:34px;font-weight:700;color:var(--gray-800);margin-bottom:16px;}\n    p{font-size:17px;color:var(--gray-600);margin-bottom:32px;}\n    .landing-image{max-width:100%;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,0.12);margin:40px 0;}\n    .cta-button{display:inline-block;padding:18px 50px;font-size:18px;font-weight:600;background:var(--primary);color:white;border:none;border-radius:14px;text-decoration:none;box-shadow:0 10px 30px rgba(21,100,192,0.35);transition:all .3s;}\n    .cta-button:hover{background:var(--primary-light);transform:translateY(-3px);}\n    .form-block{padding:32px;background:#f9fbff;border-radius:16px;margin:40px 0;}\n    .form-block input,.form-block button{width:100%;padding:16px;margin:10px 0;border-radius:10px;border:1px solid #ddd;}\n    .form-block button{background:var(--primary);color:white;border:none;font-weight:600;cursor:pointer;}\n  </style>\n</head>\n<body>\n  <div class="wrapper" id="landingRoot"></div>\n  <script>\n    const config = <%= config %>;\n    const root = document.getElementById("landingRoot");\n    config.blocks.forEach(b => {\n      if (b.type==="text"){const el=document.createElement(b.tag||"p");el.innerHTML=b.content;root.appendChild(el);}\n      if (b.type==="image"){const div=document.createElement("div");div.style.textAlign="center";const img=document.createElement("img");img.src=b.src;img.className="landing-image";div.appendChild(img);root.appendChild(div);}\n      if (b.type==="button"){const a=document.createElement("a");a.href=b.href;a.className="cta-button";a.textContent=b.text;a.target="_blank";root.appendChild(a);}\n      if (b.type==="form"){const div=document.createElement("div");div.className="form-block";div.innerHTML=b.html;root.appendChild(div);}\n    });\n  </script>\n</body>\n</html>';
 
-const notFoundTemplate = `<!DOCTYPE html>
-<html><head><title>404 - Not Found</title></head>
-<body style="font-family:sans-serif;text-align:center;padding:100px;background:#f8f9fa;">
-  <h1>404</h1><p>Page not found</p>
-</body></html>`;
+const notFoundTemplate = '<!DOCTYPE html><html><head><title>404 - Not Found</title></head><body style="font-family:sans-serif;text-align:center;padding:100px;background:#f8f9fa;"><h1>404</h1><p>Page not found</p></body></html>';
 
 if (!fs.existsSync(path.join(viewsDir, 'landing.ejs'))) {
   fs.writeFileSync(path.join(viewsDir, 'landing.ejs'), landingTemplate);
   fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundTemplate);
-  console.log('Created landing.ejs and 404.ejs templates');
+  console.log('Created landing.ejs and 404.ejs');
 }
 
-// 404 handler
 app.use((req, res) => res.status(404).render('404'));
 
-// Start server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Local: http://localhost:${PORT}`);
-  console.log(`Production pages → https://your-domain.com/p/yourshortid`);
+  console.log('Server running on port ' + PORT);
+  console.log('Local: http://localhost:' + PORT);
+  console.log('Your pages → https://your-domain.com/p/yourshortid');
 });
