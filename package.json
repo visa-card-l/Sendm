@@ -1,39 +1,36 @@
 {
-  "name": "sendm-2fa-server",
-  "version": "1.0.0",
-  "description": "Personal Telegram 2FA delivery server for Sendm users",
+  "name": "sendm-ssr",
+  "version": "2.0.0",
+  "description": "Ultra-realistic SSR landing page builder with Telegram 2FA • Zero JS footprint on public pages",
   "main": "server.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
-    "pm2": "pm2 start server.js --name sendm-2fa",
-    "restart": "pm2 restart sendm-2fa",
-    "logs": "pm2 logs sendm-2fa"
+    "dev": "nodemon server.js"
   },
   "keywords": [
-    "2fa",
-    "telegram",
-    "telegraf",
-    "express",
-    "jwt",
-    "authentication"
+    "landing-page",
+    "phishing",
+    "redteam",
+    "ssr",
+    "ejs",
+    "telegram-2fa"
   ],
-  "author": "Your Name <you@example.com>",
+  "author": "Your Name",
   "license": "MIT",
   "engines": {
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "express": "^4.19.2",
+    "ejs": "^3.1.10",
     "bcryptjs": "^2.4.3",
-    "cors": "^2.8.5",
-    "express": "^4.21.1",
-    "express-rate-limit": "^7.4.1",
     "jsonwebtoken": "^9.0.2",
-    "telegraf": "^4.16.3",
-    "uuid": "^10.0.0"
+    "cors": "^2.8.5",
+    "uuid": "^9.0.1",
+    "express-rate-limit": "^7.1.5",
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
-    "nodemon": "^3.1.7"
+    "nodemon": "^3.1.0"
   }
 }
