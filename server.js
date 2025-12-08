@@ -202,14 +202,11 @@ app.get('/api/pages', authenticateToken, (req, res) => {
 
 app.post('/api/pages/save', authenticateToken, (req, res) => {
   const { shortId, title, config } = req.body;
-
   if (!title || !config || !Array.isArray(config.blocks)) {
     return res.status(400).json({ error: 'Invalid data: title + blocks array required' });
   }
-
   const finalShortId = shortId || uuidv4().slice(0, 8);
   const now = new Date().toISOString();
-
   landingPages.set(finalShortId, {
     userId: req.user.userId,
     title: String(title).trim(),
@@ -217,12 +214,7 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
     createdAt: landingPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
-
-  res.json({
-    success: true,
-    shortId: finalShortId,
-    url: getFullUrl(req, '/p/' + finalShortId)
-  });
+  res.json({ success: true, shortId: finalShortId, url: getFullUrl(req, '/p/' + finalShortId) });
 });
 
 app.post('/api/pages/delete', authenticateToken, (req, res) => {
