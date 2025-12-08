@@ -131,7 +131,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   res.json({ user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected }});
 });
 
-// === TELEGRAM 2FA (ALL ROUTES) ===
+// === TELEGRAM 2FA ROUTES ===
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
   if (!botToken?.trim()) return res.status(400).json({ error: 'Bot token required' });
@@ -155,7 +155,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => { /* SAME AS ABOVE, just newBotToken */ 
+app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   const { newBotToken } = req.body;
   if (!newBotToken?.trim()) return res.status(400).json({ error: 'New bot token required' });
   const token = newBotToken.trim();
@@ -201,22 +201,28 @@ app.get('/api/pages', authenticateToken, (req, res) => {
 });
 
 app.post('/api/pages/save', authenticateToken, (req, res) => {
-  let { shortId, title, config } = req.body;
-  if (!title || !config || !Array.isArray(config.blocks)) return res.status(400).json({ error: 'Invalid data' });
+  const { shortId, title, config } = req.body;
 
-  const safeBlocks = config.blocks.map(b => b.type === 'form' && b.html ? { ...b, html: b.html.replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/\r?\n/g, '\\n') } : b);
+  if (!title || !config || !Array.isArray(config.blocks)) {
+    return res.status(400).json({ error: 'Invalid data: title + blocks array required' });
+  }
+
   const finalShortId = shortId || uuidv4().slice(0, 8);
   const now = new Date().toISOString();
 
   landingPages.set(finalShortId, {
     userId: req.user.userId,
     title: String(title).trim(),
-    config: { blocks: safeBlocks },
+    config: { blocks: config.blocks },
     createdAt: landingPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
 
-  res.json({ success: true, shortId: finalShortId, url: getFullUrl(req, '/p/' + finalShortId) });
+  res.json({
+    success: true,
+    shortId: finalShortId,
+    url: getFullUrl(req, '/p/' + finalShortId)
+  });
 });
 
 app.post('/api/pages/delete', authenticateToken, (req, res) => {
@@ -234,7 +240,7 @@ app.get('/p/:shortId', (req, res) => {
   res.render('landing', { title: page.title || 'Landing Page', blocks: page.config.blocks });
 });
 
-// === CREATE VIEWS + TEMPLATES ===
+// === SSR TEMPLATES ===
 const viewsDir = path.join(__dirname, 'views');
 const publicDir = path.join(__dirname, 'public');
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
@@ -292,6 +298,6 @@ app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
   console.log('SENDM SSR SERVER LIVE on port ' + PORT);
-  console.log('Editor → https://your-static-site.com/editor.html?token=your_jwt');
-  console.log('Pages  → https://sendm.onrender.com/p/shortid');
+  console.log('Editor: https://your-static-site.com/editor.html?token=your_jwt');
+  console.log('Pages:  https://your-domain.onrender.com/p/shortid');
 });
