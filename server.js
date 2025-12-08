@@ -25,9 +25,31 @@ const authLimiter = rateLimit({ windowMs: 15*60*1000, max: 10, message: { error:
 
 let users = [];
 const activeBots = new Map();
+const resetTokens = new Map();
 const landingPages = new Map();
 
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+function generate2FACode() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+async function send2FACodeViaBot(user, code) {
+  if (!user.isTelegramConnected || !user.telegramChatId || !activeBots.has(user.id)) return false;
+  const bot = activeBots.get(user.id);
+  try {
+    await bot.telegram.sendMessage(user.telegramChatId,
+      'Security Alert â€“ Password Reset\n\n' +
+      'Your 6-digit code:\n\n' +
+      '<b>' + code + '</b>\n\n' +
+      'Valid for 10 minutes.'
+    , { parse_mode: 'HTML' });
+    return true;
+  } catch (err) {
+    console.error('Failed to send code to ' + user.email + ':', err.message);
+    return false;
+  }
+}
 
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
@@ -37,25 +59,29 @@ function launchUserBot(user) {
   const bot = new Telegraf(user.telegramBotToken);
   bot.start(async (ctx) => {
     const payload = ctx.startPayload || '';
+    const chatId = ctx.chat.id.toString();
     if (payload === user.id) {
-      user.telegramChatId = ctx.chat.id.toString();
+      user.telegramChatId = chatId;
       user.isTelegramConnected = true;
-      await ctx.replyWithHTML('<b>Sendm 2FA Connected!</b>\nKeep this chat private.');
-      console.log('2FA Connected:', user.email);
+      await ctx.replyWithHTML('<b>Sendm 2FA Connected Successfully!</b>\n\nYou will now receive codes here.\n\n<i>Keep this chat private â€¢ Never share your bot</i>');
+      console.log('2FA Connected: ' + user.email + ' â†’ ' + chatId);
     } else {
-      await ctx.replyWithHTML('<b>Invalid link</b>');
+      await ctx.replyWithHTML('<b>Invalid or expired link</b>');
     }
   });
-  bot.catch(err => console.error('Bot error:', err));
+  bot.command('status', (ctx) => {
+    ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>');
+  });
+  bot.catch((err) => console.error('Bot error [' + user.email + ']:', err));
   bot.launch();
   activeBots.set(user.id, bot);
 }
 
 const authenticateToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1] || req.query.token;
-  if (!token) return res.status(401).json({ error: 'Token required' });
+  if (!token) return res.status(401).json({ error: 'Access token required' });
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ error: 'Invalid token' });
+    if (err) return res.status(403).json({ error: 'Invalid or expired token' });
     req.user = decoded;
     next();
   });
@@ -73,7 +99,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
   if (!fullName || !email || !password) return res.status(400).json({ error: 'All fields required' });
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
   if (password.length < 6) return res.status(400).json({ error: 'Password too short' });
-  if (users.find(u => u.email === email.toLowerCase())) return res.status(409).json({ error: 'Email exists' });
+  if (users.find(u => u.email === email.toLowerCase())) return res.status(409).json({ error: 'Email already exists' });
 
   const hashed = await bcrypt.hash(password, 12);
   const newUser = {
@@ -105,7 +131,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   res.json({ user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected }});
 });
 
-// === TELEGRAM 2FA ===
+// === TELEGRAM 2FA ROUTES ===
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
   if (!botToken?.trim()) return res.status(400).json({ error: 'Bot token required' });
@@ -113,55 +139,113 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   try {
-    if (activeBots.has(user.id)) activeBots.get(user.id).stop();
+    if (activeBots.has(user.id)) { activeBots.get(user.id).stop(); activeBots.delete(user.id); }
     const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
     const data = await response.json();
-    if (!data.ok) return res.status(400).json({ error: 'Invalid bot token' });
-    const username = data.result.username.replace(/^@/, '');
+    if (!data.ok || !data.result?.username) return res.status(400).json({ error: 'Invalid bot token' });
+    const botUsername = data.result.username.replace(/^@/, '');
     user.telegramBotToken = token;
     user.isTelegramConnected = false;
     user.telegramChatId = null;
     launchUserBot(user);
-    res.json({ success: true, startLink: 'https://t.me/' + username + '?start=' + user.id });
-  } catch { res.status(500).json({ error: 'Failed to connect' }); }
+    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
+    res.json({ success: true, message: 'Bot connected! Tap to activate.', botUsername: '@' + botUsername, startLink });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to connect to Telegram' });
+  }
+});
+
+app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
+  const { newBotToken } = req.body;
+  if (!newBotToken?.trim()) return res.status(400).json({ error: 'New bot token required' });
+  const token = newBotToken.trim();
+  const user = users.find(u => u.id === req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  try {
+    if (activeBots.has(user.id)) { activeBots.get(user.id).stop(); activeBots.delete(user.id); }
+    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
+    const data = await response.json();
+    if (!data.ok || !data.result?.username) return res.status(400).json({ error: 'Invalid bot token' });
+    const botUsername = data.result.username.replace(/^@/, '');
+    user.telegramBotToken = token;
+    user.isTelegramConnected = false;
+    user.telegramChatId = null;
+    launchUserBot(user);
+    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
+    res.json({ success: true, message: 'Bot token changed!', botUsername: '@' + botUsername, startLink });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to validate new token' });
+  }
 });
 
 app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  if (activeBots.has(user.id)) activeBots.get(user.id).stop();
+  if (activeBots.has(user.id)) { activeBots.get(user.id).stop(); activeBots.delete(user.id); }
   user.telegramBotToken = null; user.telegramChatId = null; user.isTelegramConnected = false;
-  res.json({ success: true });
+  res.json({ success: true, message: 'Bot disconnected', isTelegramConnected: false });
 });
 
-// === LANDING PAGES ===
+app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
+  const user = users.find(u => u.id === req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json({ activated: user.isTelegramConnected, chatId: user.telegramChatId || null });
+});
+
+// === LANDING PAGES API ===
 app.get('/api/pages', authenticateToken, (req, res) => {
-  const pages = Array.from(landingPages.entries())
+  const userPages = Array.from(landingPages.entries())
     .filter(([_, p]) => p.userId === req.user.userId)
-    .map(([id, p]) => ({ shortId: id, title: p.title, url: getFullUrl(req, '/p/' + id) }));
-  res.json({ pages });
+    .map(([id, p]) => ({ shortId: id, title: p.title, createdAt: p.createdAt, updatedAt: p.updatedAt, url: getFullUrl(req, '/p/' + id) }));
+  res.json({ pages: userPages });
 });
 
 app.post('/api/pages/save', authenticateToken, (req, res) => {
   const { shortId, title, config } = req.body;
-  if (!title || !config || !Array.isArray(config.blocks)) return res.status(400).json({ error: 'Invalid data' });
-  const id = shortId || uuidv4().slice(0, 8);
-  landingPages.set(id, {
+
+  if (!title || !config || !Array.isArray(config.blocks)) {
+    return res.status(400).json({ error: 'Invalid data: title + blocks array required' });
+  }
+
+  const finalShortId = shortId || uuidv4().slice(0, 8);
+  const now = new Date().toISOString();
+
+  landingPages.set(finalShortId, {
     userId: req.user.userId,
     title: String(title).trim(),
     config: { blocks: config.blocks },
-    updatedAt: new Date().toISOString()
+    createdAt: landingPages.get(finalShortId)?.createdAt || now,
+    updatedAt: now
   });
-  res.json({ success: true, shortId: id, url: getFullUrl(req, '/p/' + id) });
+
+  res.json({
+    success: true,
+    shortId: finalShortId,
+    url: getFullUrl(req, '/p/' + finalShortId)
+  });
 });
 
+app.post('/api/pages/delete', authenticateToken, (req, res) => {
+  const { shortId } = req.body;
+  const page = landingPages.get(shortId);
+  if (!page || page.userId !== req.user.userId) return res.status(404).json({ error: 'Not found' });
+  landingPages.delete(shortId);
+  res.json({ success: true });
+});
+
+// === PERFECT SSR PAGE ===
 app.get('/p/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
   if (!page || !page.config || !Array.isArray(page.config.blocks)) return res.status(404).render('404');
-  res.render('landing', { title: page.title || 'Page', blocks: page.config.blocks });
+  res.render('landing', { title: page.title || 'Landing Page', blocks: page.config.blocks });
 });
 
-// === REAL-LOOKING SSR TEMPLATE (NO EDITOR TRASH) ===
+// === SSR TEMPLATES ===
+const viewsDir = path.join(__dirname, 'views');
+const publicDir = path.join(__dirname, 'public');
+if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
+if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
+
 const landingTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -171,8 +255,8 @@ const landingTemplate = `<!DOCTYPE html>
   <style>
     :root{--primary:#1564C0;--primary-light:#3485e5;--gray-600:#6c757d;--gray-800:#343a40;}
     *{margin:0;padding:0;box-sizing:border-box;}
-    body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f4f8;padding:40px 20px;line-height:1.6;min-height:100vh;display:flex;align-items:center;justify-content:center;}
-    .wrapper{max-width:580px;width:100%;margin:0 auto;background:white;border-radius:20px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.15);padding:50px 40px;text-align:center;}
+    body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f4f8;padding:40px 20px;line-height:1.6;}
+    .wrapper{max-width:580px;margin:0 auto;background:white;border-radius:20px;overflow:hidden;box-shadow:0 15px 45px rgba(0,0,0,0.15);padding:44px 40px;text-align:center;}
     h1,h2,h3,h4,h5,h6{margin:20px 0;font-weight:700;color:var(--gray-800);}
     h1{font-size:42px;} h2{font-size:34px;} p{font-size:17px;color:var(--gray-600);margin-bottom:32px;line-height:1.7;}
     .landing-image{max-width:100%;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,0.12);margin:40px 0;}
@@ -181,16 +265,17 @@ const landingTemplate = `<!DOCTYPE html>
     .form-block{padding:32px;background:#f9fbff;border-radius:16px;margin:40px 0;text-align:center;}
     .form-block input,.form-block button{width:100%;padding:16px;margin:10px 0;border-radius:10px;border:1px solid #ddd;font-size:16px;}
     .form-block button{background:var(--primary);color:white;border:none;font-weight:600;cursor:pointer;}
-    .form-block button:hover{background:var(--primary-light);}
   </style>
 </head>
 <body>
   <div class="wrapper">
     <% blocks.forEach(block => { %>
       <% if (block.type === 'text') { %>
-        <<%= block.tag || 'p' %>><%- block.content %></<%= block.tag || 'p' %>>
+        <<%= block.tag || 'p' %> style="margin-bottom:20px;"><%- block.content %></<%= block.tag || 'p' %>>
       <% } else if (block.type === 'image') { %>
-        <img src="<%= block.src %>" alt="Image" class="landing-image">
+        <div style="text-align:center;margin:40px 0;">
+          <img src="<%= block.src %>" alt="Image" class="landing-image">
+        </div>
       <% } else if (block.type === 'button') { %>
         <a href="<%= block.href || '#' %>" target="_blank" class="cta-button"><%= block.text || 'Click Here' %></a>
       <% } else if (block.type === 'form') { %>
@@ -201,19 +286,18 @@ const landingTemplate = `<!DOCTYPE html>
 </body>
 </html>`;
 
-const notFoundTemplate = `<!DOCTYPE html><html><head><title>404</title></head><body style="font-family:sans-serif;text-align:center;padding:100px;background:#f8f9fa;"><h1>404</h1><p>Not found</p></body></html>`;
+const notFoundTemplate = `<!DOCTYPE html><html><head><title>404</title></head><body style="font-family:sans-serif;text-align:center;padding:100px;background:#f8f9fa;"><h1>404</h1><p>Page not found</p></body></html>`;
 
-if (!fs.existsSync(path.join(__dirname, 'views'))) fs.mkdirSync(path.join(__dirname, 'views'), { recursive: true });
-if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
-if (!fs.existsSync(path.join(__dirname, 'views', 'landing.ejs'))) {
-  fs.writeFileSync(path.join(__dirname, 'views', 'landing.ejs'), landingTemplate);
-  fs.writeFileSync(path.join(__dirname, 'views', '404.ejs'), notFoundTemplate);
+if (!fs.existsSync(path.join(viewsDir, 'landing.ejs'))) {
+  fs.writeFileSync(path.join(viewsDir, 'landing.ejs'), landingTemplate);
+  fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundTemplate);
+  console.log('SSR templates created');
 }
 
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('SENDM LIVE — PORT ' + PORT);
-  console.log('Editor: https://your-static.com/editor.html?token=xxx');
-  console.log('Pages:  https://your-domain.onrender.com/p/xxxxxx');
+  console.log('SENDM SSR SERVER LIVE on port ' + PORT);
+  console.log('Editor: https://your-static-site.com/editor.html?token=your_jwt');
+  console.log('Pages:  https://your-domain.onrender.com/p/shortid');
 });
