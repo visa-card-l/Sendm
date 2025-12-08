@@ -39,7 +39,7 @@ async function send2FACodeViaBot(user, code) {
   const bot = activeBots.get(user.id);
   try {
     await bot.telegram.sendMessage(user.telegramChatId,
-      'Security Alert â€“ Password Reset\n\n' +
+      'Security Alert – Password Reset\n\n' +
       'Your 6-digit code:\n\n' +
       '<b>' + code + '</b>\n\n' +
       'Valid for 10 minutes.'
@@ -63,8 +63,8 @@ function launchUserBot(user) {
     if (payload === user.id) {
       user.telegramChatId = chatId;
       user.isTelegramConnected = true;
-      await ctx.replyWithHTML('<b>Sendm 2FA Connected Successfully!</b>\n\nYou will now receive codes here.\n\n<i>Keep this chat private â€¢ Never share your bot</i>');
-      console.log('2FA Connected: ' + user.email + ' â†’ ' + chatId);
+      await ctx.replyWithHTML('<b>Sendm 2FA Connected Successfully!</b>\n\nYou will now receive codes here.\n\n<i>Keep this chat private • Never share your bot</i>');
+      console.log('2FA Connected: ' + user.email + ' → ' + chatId);
     } else {
       await ctx.replyWithHTML('<b>Invalid or expired link</b>');
     }
@@ -120,7 +120,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
   const user = users.find(u => u.email === email.toLowerCase());
-  if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!user(filepath) || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: 'Invalid credentials' });
   const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
   res.json({ success: true, token, user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected }});
 });
@@ -136,6 +136,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
   if (!botToken?.trim()) return res.status(400).json({ error: 'Bot token required' });
   const token = botToken.trim();
+<<<<<<< Updated upstream
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   try {
@@ -233,11 +234,11 @@ app.post('/api/pages/delete', authenticateToken, (req, res) => {
   res.json({ success: true });
 });
 
-// === PERFECT SSR PAGE ===
+// === PERFECT CLEAN LANDING PAGE (NO EDITOR UI) ===
 app.get('/p/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
   if (!page || !page.config || !Array.isArray(page.config.blocks)) return res.status(404).render('404');
-  res.render('landing', { title: page.title || 'Landing Page', blocks: page.config.blocks });
+  res.render('landing', { title: page.title || 'Special Offer', blocks: page.config.blocks });
 });
 
 // === SSR TEMPLATES ===
@@ -249,40 +250,137 @@ if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir, { recursive: true });
 const landingTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title><%= title %></title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
   <style>
-    :root{--primary:#1564C0;--primary-light:#3485e5;--gray-600:#6c757d;--gray-800:#343a40;}
+    :root{
+      --primary:#1564C0;
+      --primary-light:#3485e5;
+      --gray-600:#6c757d;
+      --gray-800:#343a40;
+    }
     *{margin:0;padding:0;box-sizing:border-box;}
-    body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f4f8;padding:40px 20px;line-height:1.6;}
-    .wrapper{max-width:580px;margin:0 auto;background:white;border-radius:20px;overflow:hidden;box-shadow:0 15px 45px rgba(0,0,0,0.15);padding:44px 40px;text-align:center;}
-    h1,h2,h3,h4,h5,h6{margin:20px 0;font-weight:700;color:var(--gray-800);}
-    h1{font-size:42px;} h2{font-size:34px;} p{font-size:17px;color:var(--gray-600);margin-bottom:32px;line-height:1.7;}
-    .landing-image{max-width:100%;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,0.12);margin:40px 0;}
-    .cta-button{display:inline-block;padding:18px 50px;font-size:18px;font-weight:600;background:var(--primary);color:white;border:none;border-radius:14px;text-decoration:none;box-shadow:0 10px 30px rgba(21,100,192,0.35);transition:all .3s;cursor:pointer;}
-    .cta-button:hover{background:var(--primary-light);transform:translateY(-3px);}
-    .form-block{padding:32px;background:#f9fbff;border-radius:16px;margin:40px 0;text-align:center;}
-    .form-block input,.form-block button{width:100%;padding:16px;margin:10px 0;border-radius:10px;border:1px solid #ddd;font-size:16px;}
-    .form-block button{background:var(--primary);color:white;border:none;font-weight:600;cursor:pointer;}
+    body{
+      font-family:'Inter',sans-serif;
+      background:#f0f4f8;
+      padding:40px 20px;
+      line-height:1.7;
+      color:#333;
+    }
+    .wrapper{
+      max-width:580px;
+      margin:0 auto;
+      background:white;
+      border-radius:20px;
+      overflow:hidden;
+      box-shadow:0 20px 60px rgba(0,0,0,0.15);
+      padding:50px 40px;
+      text-align:center;
+    }
+    h1{font-size:42px;font-weight:800;color:var(--gray-800);margin-bottom:20px;}
+    h2{font-size:36px;font-weight:700;margin:30px 0 16px;}
+    h3{font-size:28px;font-weight:700;margin:24px 0 12px;}
+    p{font-size:18px;color:var(--gray-600);margin-bottom:28px;}
+    .landing-image{
+      max-width:100%;
+      height:auto;
+      border-radius:16px;
+      box-shadow:0 15px 40px rgba(0,0,0,0.15);
+      margin:40px 0;
+    }
+    .cta-button{
+      display:inline-block;
+      padding:18px 50px;
+      font-size:19px;
+      font-weight:700;
+      background:var(--primary);
+      color:white !important;
+      text-decoration:none;
+      border-radius:14px;
+      box-shadow:0 12px 35px rgba(21,100,192,0.4);
+      transition:all .3s;
+      margin:20px 10px;
+    }
+    .cta-button:hover{
+      background:var(--primary-light);
+      transform:translateY(-4px);
+      box-shadow:0 20px 50px rgba(21,100,192,0.5);
+    }
+    .form-block{
+      background:#f8faff;
+      padding:40px 32px;
+      border-radius:16px;
+      margin:48px 0;
+      border:1px solid #e3e8ff;
+    }
+    .form-block input,
+    .form-block textarea,
+    .form-block button{
+      width:100%;
+      padding:16px 20px;
+      margin:12px 0;
+      border-radius:12px;
+      border:1px solid #d1d8ff;
+      font-size:16px;
+    }
+    .form-block button{
+      background:var(--primary);
+      color:white;
+      border:none;
+      font-weight:700;
+      cursor:pointer;
+      font-size:18px;
+    }
+    .form-block button:hover{
+      background:var(--primary-light);
+    }
+    .footer{
+      margin-top:60px;
+      padding-top:30px;
+      border-top:1px solid #eee;
+      color:#999;
+      font-size:14px;
+    }
+    @media(max-width:640px){
+      .wrapper{padding:40px 24px;}
+      h1{font-size:36px;}
+      h2{font-size:30px;}
+    }
   </style>
 </head>
 <body>
-  <div class="wrapper">
-    <% blocks.forEach(block => { %>
-      <% if (block.type === 'text') { %>
-        <<%= block.tag || 'p' %> style="margin-bottom:20px;"><%- block.content %></<%= block.tag || 'p' %>>
-      <% } else if (block.type === 'image') { %>
-        <div style="text-align:center;margin:40px 0;">
-          <img src="<%= block.src %>" alt="Image" class="landing-image">
-        </div>
-      <% } else if (block.type === 'button') { %>
-        <a href="<%= block.href || '#' %>" target="_blank" class="cta-button"><%= block.text || 'Click Here' %></a>
-      <% } else if (block.type === 'form') { %>
-        <div class="form-block"><%- block.html %></div>
-      <% } %>
-    <% }); %>
-  </div>
+<div class="wrapper">
+  <% blocks.forEach(block => { %>
+    <% if (block.type === 'text') { %>
+      <<%= block.tag || 'p' %> style="font-size:<%= block.tag==='h1'?'42px':block.tag==='h2'?'36px':block.tag==='h3'?'28px':'18px' %>;font-weight:<%= block.tag?.startsWith('h')?'700':'400' %>;margin:28px 0;">
+        <%- block.content %>
+      </<%= block.tag || 'p' %>>
+    <% } %>
+    <% if (block.type === 'image') { %>
+      <img src="<%= block.src %>" alt="Offer" class="landing-image" loading="lazy">
+    <% } %>
+    <% if (block.type === 'button') { %>
+      <a href="<%= block.href && block.href !== '#' ? block.href : 'javascript:void(0)' %>" 
+         target="_blank" 
+         class="cta-button">
+        <%= block.text || 'Click Here' %>
+      </a>
+    <% } %>
+    <% if (block.type === 'form') { %>
+      <div class="form-block">
+        <%- block.html %>
+      </div>
+    <% } %>
+  <% }); %>
+</div>
+<div class="footer">
+  © <%= new Date().getFullYear() %> All rights reserved.
+</div>
 </body>
 </html>`;
 
