@@ -20,17 +20,18 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// === SECURITY ===
+// === SECURITY & STORAGE ===
 const JWT_SECRET = 'sendm2fa_ultra_secure_jwt_2025!@#$%^&*()_+-=9876543210zyxwvutsrqponmlkjihgfedcba';
+
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
+  windowMs: 15 * 60 * 1000,
   max: 10,
   message: { error: 'Too many attempts, try again later.' }
 });
 
 let users = [];
 const activeBots = new Map();
-const resetTokens = new Map();        // resetToken → { userId, code, expiresAt }
+const resetCodes = new Map();        // email → { code, expiresAt }  ← SIMPLE & CLEAN
 const landingPages = new Map();
 
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -46,9 +47,9 @@ async function send2FACodeViaBot(user, code) {
     await bot.telegram.sendMessage(
       user.telegramChatId,
       'Security Alert – Password Reset\n\n' +
-      'Your 6-digit code:\n\n' +
+      'Your 6-digit recovery code:\n\n' +
       `<b>${code}</b>\n\n` +
-      'Valid for 10 minutes.',
+      'Valid for 10 minutes only.',
       { parse_mode: 'HTML' }
     );
     return true;
@@ -75,12 +76,12 @@ function launchUserBot(user) {
       user.isTelegramConnected = true;
       await ctx.replyWithHTML(
         '<b>Sendm 2FA Connected Successfully!</b>\n\n' +
-        'You will now receive login & recovery codes here.\n\n' +
+        'You will now receive recovery codes here.\n\n' +
         '<i>Keep this chat private • Never share your bot</i>'
       );
       console.log('2FA Connected: ' + user.email + ' → ' + chatId);
     } else {
-      await ctx.replyWithHTML('<b>Invalid or expired link</b>\nThis link can only be used once.');
+      await ctx.replyWithHTML('<b>Invalid or expired link</b>');
     }
   });
 
@@ -166,7 +167,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   res.json({ user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected } });
 });
 
-// === TELEGRAM 2FA ===
+// === TELEGRAM 2FA CONNECTION ===
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
   if (!botToken?.trim()) return res.status(400).json({ error: 'Bot token required' });
@@ -197,7 +198,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Bot connected! Tap link to activate.',
+      message: 'Bot connected! Tap to activate 2FA.',
       botUsername: '@' + botUsername,
       startLink
     });
@@ -206,7 +207,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => { /* same as above, unchanged */ 
+app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   const { newBotToken } = req.body;
   if (!newBotToken?.trim()) return res.status(400).json({ error: 'New bot token required' });
   const token = newBotToken.trim();
@@ -227,7 +228,7 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => { 
     user.telegramChatId = null;
     launchUserBot(user);
     const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
-    res.json({ success: true, message: 'Bot token changed!', botUsername: '@' + botUsername, startLink });
+    res.json({ success: true, message: 'Bot token updated!', botUsername: '@' + botUsername, startLink });
   } catch (err) {
     res.status(500).json({ error: 'Failed to validate new token' });
   }
@@ -243,7 +244,7 @@ app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
   user.telegramBotToken = null;
   user.telegramChatId = null;
   user.isTelegramConnected = false;
-  res.json({ success: true, message: 'Disconnected', isTelegramConnected: false });
+  res.json({ success: true, message: '2FA disconnected', isTelegramConnected: false });
 });
 
 app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
@@ -252,71 +253,112 @@ app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
   res.json({ activated: user.isTelegramConnected, chatId: user.telegramChatId || null });
 });
 
-// === PASSWORD RESET (FIXED & SECURE) ===
+// === FORGOT PASSWORD – ONLY 6-DIGIT CODE (YOUR REQUEST) ===
 app.post('/api/auth/forgot-password', authLimiter, async (req, res) => {
   const { email } = req.body;
   if (!email || !isValidEmail(email)) return res.status(400).json({ error: 'Valid email required' });
 
   const user = users.find(u => u.email === email.toLowerCase());
-  if (!user || !user.isTelegramConnected) {
-    return res.json({ success: true, message: 'If account exists and 2FA is connected, code was sent.' });
+
+  if (!user || !user.isTelegramConnected || !user.telegramChatId) {
+    return res.json({ 
+      success: true, 
+      message: 'If your account exists and 2FA is connected, a code was sent.' 
+    });
   }
 
   const code = generate2FACode();
-  const resetToken = uuidv4();
-  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 min
+  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-  resetTokens.set(resetToken, { userId: user.id, code, expiresAt });
+  resetCodes.set(user.email.toLowerCase(), { code, expiresAt });
 
   const sent = await send2FACodeViaBot(user, code);
   if (!sent) {
-    resetTokens.delete(resetToken);
-    return res.status(500).json({ error: 'Failed to send code (bot offline?)' });
+    resetCodes.delete(user.email.toLowerCase());
+    return res.status(500).json({ error: 'Failed to deliver code – bot may be offline' });
   }
 
-  // DO NOT leak resetToken
   res.json({ success: true, message: '6-digit code sent to your Telegram bot!' });
 });
 
-app.post('/api/auth/verify-reset-code', authLimiter, (req, res) => {
-  const { resetToken, code } = req.body;
-  if (!resetToken || !code || code.length !== 6) return res.status(400).json({ error: 'Token and 6-digit code required' });
+app.post('/api/auth/reset-password-with-code', authLimiter, async (req, res) => {
+  const { email, code, newPassword } = req.body;
 
-  const entry = resetTokens.get(resetToken);
-  if (!entry || Date.now() > entry.expiresAt || entry.code !== code.trim()) {
-    if (entry) resetTokens.delete(resetToken);
+  if (!email || !code || !newPassword || newPassword.length < 6) {
+    return res.status(400).json({ error: 'Email, 6-digit code and new password required' });
+  }
+
+  if (!isValidEmail(email)) return res.status(400).json({ error: 'Invalid email' });
+
+  const stored = resetCodes.get(email.toLowerCase());
+  if (!stored || stored.code !== code.trim() || Date.now() > stored.expiresAt) {
     return res.status(400).json({ error: 'Invalid or expired code' });
   }
 
-  // Code valid → return user info (frontend can now allow password change)
-  const user = users.find(u => u.id === entry.userId);
-  resetTokens.delete(resetToken); // one-time use
-
-  res.json({ success: true, userId: user.id, email: user.email });
-});
-
-app.post('/api/auth/reset-password', authLimiter, async (req, res) => {
-  const { userId, newPassword } = req.body;
-  if (!userId || !newPassword || newPassword.length < 6)
-    return res.status(400).json({ error: 'Valid user ID and password required' });
-
-  const user = users.find(u => u.id === userId);
+  const user = users.find(u => u.email === email.toLowerCase());
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   user.password = await bcrypt.hash(newPassword, 12);
-  res.json({ success: true, message: 'Password changed successfully!' });
+  resetCodes.delete(email.toLowerCase());
+
+  res.json({ success: true, message: 'Password reset successfully! You can now log in.' });
 });
 
-// === LANDING PAGES (unchanged) ===
-// ... [your existing /api/pages, /p/:shortId, etc. routes here - exactly as you had]
-
-// Auto-clean expired reset tokens
+// Auto-clean expired codes
 setInterval(() => {
   const now = Date.now();
-  for (const [token, data] of resetTokens.entries()) {
-    if (data.expiresAt < now) resetTokens.delete(token);
+  for (const [email, data] of resetCodes.entries()) {
+    if (data.expiresAt < now) resetCodes.delete(email);
   }
-}, 10 * 60 * 1000);
+}, 5 * 60 * 1000);
+
+// === LANDING PAGES ===
+app.get('/api/pages', authenticateToken, (req, res) => {
+  const userPages = Array.from(landingPages.entries())
+    .filter(([_, p]) => p.userId === req.user.userId)
+    .map(([id, p]) => ({
+      shortId: id,
+      title: p.title,
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+      url: getFullUrl(req, '/p/' + id)
+    }));
+  res.json({ pages: userPages });
+});
+
+app.post('/api/pages/save', authenticateToken, (req, res) => {
+  const { shortId, title, config } = req.body;
+  if (!title || !config || !Array.isArray(config.blocks)) {
+    return res.status(400).json({ error: 'Invalid data' });
+  }
+
+  const finalShortId = shortId || uuidv4().slice(0, 8);
+  const now = new Date().toISOString();
+
+  landingPages.set(finalShortId, {
+    userId: req.user.userId,
+    title: title.trim(),
+    config,
+    createdAt: landingPages.get(finalShortId)?.createdAt || now,
+    updatedAt: now
+  });
+
+  res.json({ success: true, shortId: finalShortId, url: getFullUrl(req, '/p/' + finalShortId) });
+});
+
+app.post('/api/pages/delete', authenticateToken, (req, res) => {
+  const { shortId } = req.body;
+  const page = landingPages.get(shortId);
+  if (!page || page.userId !== req.user.userId) return res.status(404).json({ error: 'Not found' });
+  landingPages.delete(shortId);
+  res.json({ success: true });
+});
+
+app.get('/p/:shortId', (req, res) => {
+  const page = landingPages.get(req.params.shortId);
+  if (!page || !page.config?.blocks) return res.status(404).render('404');
+  res.render('landing', { title: page.title || 'Page', config: JSON.stringify(page.config) });
+});
 
 // === TEMPLATES ===
 const viewsDir = path.join(__dirname, 'views');
@@ -335,17 +377,17 @@ h2{font-size:34px;font-weight:700;color:var(--gray-800);margin-bottom:16px;}p{fo
 .cta-button{display:inline-block;padding:18px 50px;font-size:18px;font-weight:600;background:var(--primary);color:white;border:none;border-radius:14px;text-decoration:none;box-shadow:0 10px 30px rgba(21,100,192,0.35);transition:all .3s;}
 .cta-button:hover{background:var(--primary-light);transform:translateY(-3px);}
 .form-block{padding:32px;background:#f9fbff;border-radius:16px;margin:40px 0;}
-.form-block input,.form-block button{width:100%;padding:16px;margin:10px 0;border-radius:10px;border:1px solid #ddd;}
+.form-block input,.form-block button{width:100%;padding:16px;margin:10px 0;border-radius:10px;border:1px solid #ddd;font-size:16px;}
 .form-block button{background:var(--primary);color:white;border:none;font-weight:600;cursor:pointer;}
 </style></head><body>
-<div class="wrapper" id="landingRoot"></div>
+<div class="wrapper" id="root"></div>
 <script>
 const config = <%= config %>;
-const root = document.getElementById("landingRoot");
+const root = document.getElementById("root");
 config.blocks.forEach(b => {
   if (b.type==="text"){const el=document.createElement(b.tag||"p");el.innerHTML=b.content;root.appendChild(el);}
   if (b.type==="image"){const div=document.createElement("div");div.style.textAlign="center";const img=document.createElement("img");img.src=b.src;img.className="landing-image";div.appendChild(img);root.appendChild(div);}
-  if (b.type==="button"){const a=document.createElement("a");a.href=b.href;a.className="cta-button";a.textContent=b.text;a.target="_blank";root.appendChild(a);}
+  if (b.type==="button"){const a=document.createElement("a");a.href=b.href||"#";a.className="cta-button";a.textContent=b.text;a.target="_blank";root.appendChild(a);}
   if (b.type==="form"){const div=document.createElement("div");div.className="form-block";div.innerHTML=b.html;root.appendChild(div);}
 });
 </script>
@@ -360,6 +402,7 @@ if (!fs.existsSync(path.join(viewsDir, 'landing.ejs'))) {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log(`SENDM SERVER LIVE → http://localhost:${PORT}`);
+  console.log(`SENDM SERVER RUNNING ON PORT ${PORT}`);
+  console.log(`Local: http://localhost:${PORT}`);
   console.log(`Pages → https://your-domain.com/p/shortid`);
 });
