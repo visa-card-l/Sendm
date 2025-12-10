@@ -1,3 +1,4 @@
+// server.js
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -11,21 +12,22 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Middleware
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// === STORAGE & SECURITY ===
+// Security & Storage
 const JWT_SECRET = 'sendm2fa_ultra_secure_jwt_2025!@#$%^&*()_+-=9876543210zyxwvutsrqponmlkjihgfedcba';
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Too many attempts' } });
 
 let users = [];
 const activeBots = new Map();
 const resetTokens = new Map();
-const landingPages = new Map(); // shortId â†’ page data
+const landingPages = new Map();
 
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
@@ -38,7 +40,7 @@ async function send2FACodeViaBot(user, code) {
   const bot = activeBots.get(user.id);
   try {
     await bot.telegram.sendMessage(user.telegramChatId, `
-Security Alert â€“ Password Reset
+Security Alert – Password Reset
 
 Your 6-digit code:
 
@@ -73,9 +75,9 @@ function launchUserBot(user) {
 
 You will now receive login & recovery codes here.
 
-<i>Keep this chat private â€¢ Never share your bot</i>
+<i>Keep this chat private • Never share your bot</i>
       `);
-      console.log(`2FA Connected: \( {user.email} â†’ \){chatId}`);
+      console.log(`2FA Connected: \( {user.email} → \){chatId}`);
     } else {
       await ctx.replyWithHTML(`<b>Invalid or expired link</b>\nThis link can only be used once.`);
     }
@@ -94,7 +96,7 @@ Status: <b>${user.isTelegramConnected ? 'Connected' : 'Not Connected'}</b>
   activeBots.set(user.id, bot);
 }
 
-// === MIDDLEWARE ===
+// Middleware
 const authenticateToken = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1] || req.query.token;
   if (!token) return res.status(401).json({ error: 'Access token required' });
@@ -106,7 +108,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// === AUTH ROUTES ===
+// ==================== AUTH ROUTES ====================
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { fullName, email, password } = req.body;
   if (!fullName || !email || !password) return res.status(400).json({ error: 'All fields required' });
@@ -157,6 +159,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   res.json({ user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected } });
 });
 
+// CONNECT TELEGRAM - USING CONCATENATION
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
   if (!botToken?.trim()) return res.status(400).json({ error: 'Bot token required' });
@@ -171,33 +174,34 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
       activeBots.delete(user.id);
     }
 
-    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
     const data = await response.json();
 
     if (!data.ok || !data.result?.username)
       return res.status(400).json({ error: 'Invalid bot token or no username set' });
 
     const botUsername = data.result.username.replace(/^@/, '');
-
     user.telegramBotToken = token;
     user.isTelegramConnected = false;
     user.telegramChatId = null;
 
     launchUserBot(user);
 
+    // USING CONCATENATION AS REQUESTED
     const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
 
     res.json({
       success: true,
       message: 'Bot connected! Tap to activate.',
       botUsername: '@' + botUsername,
-      startLink
+      startLink: startLink
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to connect to Telegram' });
   }
 });
 
+// CHANGE BOT TOKEN - USING CONCATENATION
 app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   const { newBotToken } = req.body;
   if (!newBotToken?.trim()) return res.status(400).json({ error: 'New bot token required' });
@@ -212,27 +216,27 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
       activeBots.delete(user.id);
     }
 
-    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
     const data = await response.json();
 
     if (!data.ok || !data.result?.username)
       return res.status(400).json({ error: 'Invalid bot token' });
 
     const botUsername = data.result.username.replace(/^@/, '');
-
     user.telegramBotToken = token;
     user.isTelegramConnected = false;
     user.telegramChatId = null;
 
     launchUserBot(user);
 
+    // USING CONCATENATION
     const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
 
     res.json({
       success: true,
       message: 'Bot token changed! Click link to activate.',
       botUsername: '@' + botUsername,
-      startLink
+      startLink: startLink
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to validate new token' });
@@ -325,7 +329,7 @@ app.post('/api/auth/reset-password', (req, res) => {
   res.json({ success: true, message: 'Password reset successful' });
 });
 
-// === LANDING PAGE API ===
+// ==================== LANDING PAGES ====================
 app.get('/api/pages', authenticateToken, (req, res) => {
   const userPages = Array.from(landingPages.entries())
     .filter(([_, page]) => page.userId === req.user.userId)
@@ -334,14 +338,15 @@ app.get('/api/pages', authenticateToken, (req, res) => {
       title: page.title,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
-      url: `\( {req.protocol}:// \){req.get('host')}/p/${shortId}`
+      url: req.protocol + '://' + req.get('host') + '/p/' + shortId
     }));
   res.json({ pages: userPages });
 });
 
 app.post('/api/pages/save', authenticateToken, (req, res) => {
   const { shortId, title, config } = req.body;
-  if (!title || !config) return res.status(400).json({ error: 'Title and config required' });
+  if (!title || !config || !Array.isArray(config.blocks))
+    return res.status(400).json({ error: 'Title and config.blocks required' });
 
   const finalShortId = shortId || uuidv4().slice(0, 8);
   const now = new Date().toISOString();
@@ -357,7 +362,7 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
   res.json({
     success: true,
     shortId: finalShortId,
-    url: `\( {req.protocol}:// \){req.get('host')}/p/${finalShortId}`
+    url: req.protocol + '://' + req.get('host') + '/p/' + finalShortId
   });
 });
 
@@ -374,61 +379,90 @@ app.post('/api/pages/delete', authenticateToken, (req, res) => {
 app.get('/p/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
   if (!page) return res.status(404).render('404');
-  res.render('landing', { title: page.title, config: JSON.stringify(page.config) });
+
+  res.render('landing', {
+    title: page.title,
+    blocks: page.config.blocks || []
+  });
 });
 
-// === AUTO-CREATE VIEWS ===
+// ==================== AUTO CREATE VIEWS ====================
 const viewsDir = path.join(__dirname, 'views');
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
 if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
 
-const landingTemplate = `<!DOCTYPE html>
+const landingEjs = `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title><%= title %></title>
+  <meta name="description" content="Custom landing page built with Sendm">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
   <style>
     :root{--primary:#1564C0;--primary-light:#3485e5;--gray-600:#6c757d;--gray-800:#343a40;}
     *{margin:0;padding:0;box-sizing:border-box;}
-    body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f4f8;padding:40px 20px;line-height:1.6;}
-    .wrapper{max-width:580px;margin:0 auto;background:white;border-radius:20px;overflow:hidden;box-shadow:0 15px 45px rgba(0,0,0,0.15);padding:44px 40px;text-align:center;}
-    h2{font-size:34px;font-weight:700;color:var(--gray-800);margin-bottom:16px;}
-    p{font-size:17px;color:var(--gray-600);margin-bottom:32px;}
-    .landing-image{max-width:100%;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,0.12);margin:40px 0;}
-    .cta-button{display:inline-block;padding:18px 50px;font-size:18px;font-weight:600;background:var(--primary);color:white;border:none;border-radius:14px;text-decoration:none;box-shadow:0 10px 30px rgba(21,100,192,0.35);transition:all .3s;}
-    .cta-button:hover{background:var(--primary-light);transform:translateY(-3px);}
-    .form-block{padding:32px;background:#f9fbff;border-radius:16px;margin:40px 0;}
-    .form-block input,.form-block button{width:100%;padding:16px;margin:10px 0;border-radius:10px;border:1px solid #ddd;}
+    body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f8fc;color:var(--gray-800);line-height:1.7;}
+    .container{max-width:700px;margin:40px auto;background:white;border-radius:24px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.12);}
+    .content{padding:80px 50px;text-align:center;}
+    h1{font-size:42px;font-weight:700;margin-bottom:20px;background:linear-gradient(135deg,var(--primary),var(--primary-light));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
+    h2{font-size:36px;font-weight:700;margin:40px 0 20px;color:var(--gray-800);}
+    p{font-size:18px;color:var(--gray-600);margin-bottom:32px;max-width:600px;margin-left:auto;margin-right:auto;}
+    .hero-img{max-width:100%;border-radius:18px;box-shadow:0 15px 40px rgba(0,0,0,0.15);margin:50px 0;}
+    .cta{display:inline-block;padding:22px 70px;font-size:21px;font-weight:600;background:var(--primary);color:white;text-decoration:none;border-radius:16px;box-shadow:0 12px 35px rgba(21,100,192,0.4);transition:all .3s;}
+    .cta:hover{background:var(--primary-light);transform:translateY(-5px);box-shadow:0 20px 50px rgba(21,100,192,0.5);}
+    .form-block{padding:40px;background:#f9fbff;border-radius:20px;margin:50px 0;border:1px solid #e0e7ff;text-align:left;}
+    .form-block h3{margin-bottom:24px;font-size:24px;text-align:center;}
+    .form-block input,.form-block button{width:100%;padding:16px;margin:10px 0;border-radius:12px;border:1px solid #ddd;font-size:16px;}
     .form-block button{background:var(--primary);color:white;border:none;font-weight:600;cursor:pointer;}
+    .footer{padding:40px;background:#f9f9f9;text-align:center;color:#888;font-size:14px;border-top:1px solid #eee;}
+    @media(max-width:640px){.content{padding:60px 30px;}h1{font-size:34px;}.cta{padding:18px 50px;font-size:19px;}}
   </style>
 </head>
 <body>
-  <div class="wrapper" id="landingRoot"></div>
-  <script>
-    const config = <%= config %>;
-    const root = document.getElementById('landingRoot');
-    config.blocks.forEach(b => {
-      if (b.type==='text'){const el=document.createElement(b.tag||'p');el.innerHTML=b.content;root.appendChild(el);}
-      if (b.type==='image'){const div=document.createElement('div');div.style.textAlign='center';const img=document.createElement('img');img.src=b.src;img.className='landing-image';div.appendChild(img);root.appendChild(div);}
-      if (b.type==='button'){const a=document.createElement('a');a.href=b.href;a.className='cta-button';a.textContent=b.text;a.target='_blank';root.appendChild(a);}
-      if (b.type==='form'){const div=document.createElement('div');div.className='form-block';div.innerHTML=b.html;root.appendChild(div);}
-    });
-  </script>
+  <div class="container">
+    <div class="content">
+      <% blocks.forEach(block => { %>
+        <% if (block.type === 'text') { %>
+          <% if (block.tag === 'h1' || block.tag === 'h2') { %>
+            <<%= block.tag %>><%= block.content %></<%= block.tag %>>
+          <% } else { %>
+            <p><%= block.content %></p>
+          <% } %>
+        <% } else if (block.type === 'image') { %>
+          <img src="<%= block.src %>" alt="Image" class="hero-img" loading="lazy">
+        <% } else if (block.type === 'button') { %>
+          <a href="<%= block.href && block.href !== '#' ? block.href : '#' %>"
+             class="cta"
+             <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>>
+            <%= block.text || 'Click Here' %>
+          </a>
+        <% } else if (block.type === 'form') { %>
+          <div class="form-block"><%- block.html %></div>
+        <% } %>
+      <% }) %>
+    </div>
+    <div class="footer">
+      © <%= new Date().getFullYear() %> Sendm • All rights reserved<br>
+      <a href="#" style="color:var(--primary);text-decoration:none;">Unsubscribe</a> • 
+      <a href="#" style="color:var(--primary);text-decoration:none;">Privacy Policy</a>
+    </div>
+  </div>
 </body>
 </html>`;
 
-const notFoundTemplate = `<!DOCTYPE html><html><head><title>404</title></head><body style="font-family:sans-serif;text-align:center;padding:100px;background:#f8f9fa;"><h1>404</h1><p>Page not found</p></body></html>`;
+const notFoundEjs = `<!DOCTYPE html><html><head><title>404 - Sendm</title><style>body{font-family:sans-serif;background:#f8f9fa;color:#333;text-align:center;padding:100px;}h1{font-size:80px;}p{font-size:20px;}</style></head><body><h1>404</h1><p>Page not found</p></body></html>`;
 
 if (!fs.existsSync(path.join(viewsDir, 'landing.ejs'))) {
-  fs.writeFileSync(path.join(viewsDir, 'landing.ejs'), landingTemplate);
-  fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundTemplate);
-  console.log('Created EJS templates');
+  fs.writeFileSync(path.join(viewsDir, 'landing.ejs'), landingEjs);
+  fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
+  console.log('Created landing.ejs and 404.ejs');
 }
 
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`Published pages â†’ /p/shortid`);
+  console.log(`\nSendm Server Running`);
+  console.log(`http://localhost:${PORT}`);
+  console.log(`Your pages → http://localhost:${PORT}/p/yourshortid\n`);
 });
