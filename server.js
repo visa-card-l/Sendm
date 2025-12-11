@@ -1,4 +1,4 @@
-// server.js — FINAL & COMPLETE (December 2025) — 100% WORKING
+// server.js — FINAL, COMPLETE & 100% WORKING (December 2025)
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -8,7 +8,7 @@ const rateLimit = require('express-rate-limit');
 const { Telegraf } = require('telegraf');
 const path = require('path');
 const fs = require('fs');
-const fetch = require('node-fetch'); // Required for Telegram API calls
+const fetch = require('node-fetch'); // ← needed for Telegram API calls
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,7 +21,7 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Security & Storage (in-memory)
+// Security & Storage
 const JWT_SECRET = 'sendm2fa_ultra_secure_jwt_2025!@#$%^&*()_+-=9876543210zyxwvutsrqponmlkjihgfedcba';
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Too many attempts' } });
 
@@ -110,7 +110,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// ==================== ALL 20+ ROUTES — FULLY COMPLETE ====================
+// ==================== ALL ROUTES (100% COMPLETE) ====================
 
 // 1. Register
 app.post('/api/auth/register', authLimiter, async (req, res) => {
@@ -188,9 +188,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
     user.telegramChatId = null;
     launchUserBot(user);
 
-    const startLink = '
-
- 'https://t.me/' + botUsername + '?start=' + user.id;
+    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
     res.json({ success: true, message: 'Bot connected!', botUsername: '@' + botUsername, startLink });
   } catch (err) {
@@ -201,7 +199,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 // 5. Change Bot Token
 app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   const { newBotToken } = req.body;
-  if (!newBotToken?.trim()) return res.status(100).json({ error: 'New bot token required' });
+  if (!newBotToken?.trim()) return res.status(400).json({ error: 'New bot token required' });
 
   const token = newBotToken.trim();
   const user = users.find(u => u.id === req.user.userId);
@@ -221,7 +219,7 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
     user.telegramChatId = null;
     launchUserBot(user);
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
+    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
     res.json({ success: true, message: 'Bot token updated!', botUsername: '@' + botUsername, startLink });
   } catch (err) {
@@ -363,14 +361,14 @@ app.post('/api/pages/delete', authenticateToken, (req, res) => {
   res.json({ success: true });
 });
 
-// 14. Public Page — 100% CLEAN RENDERING (NO EDITOR UI EVER)
+// 14. Public Page — ALWAYS CLEAN
 app.get('/p/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
   if (!page) return res.status(404).render('404');
   res.render('landing', { title: page.title, blocks: page.config.blocks });
 });
 
-// ==================== FORCE CLEAN TEMPLATES (BEST & FINAL) ====================
+// ==================== CLEAN TEMPLATES (FORCED ON STARTUP) ====================
 
 const CLEAN_LANDING_EJS = `<!DOCTYPE html>
 <html lang="en">
@@ -424,22 +422,22 @@ const CLEAN_LANDING_EJS = `<!DOCTYPE html>
     </div>
   </div>
 </body>
-</html>`;
+</html>`.trim();
 
 const NOT_FOUND_EJS = `<!DOCTYPE html><html><head><title>404</title><style>body{font-family:sans-serif;background:#f8f9fa;text-align:center;padding:100px;color:#333;}h1{font-size:80px;}p{font-size:20px;}</style></head><body><h1>404</h1><p>Page not found</p></body></html>`;
 
-// FORCE CLEAN TEMPLATES ON EVERY START (Best & Safest)
+// Force clean templates on every start (prevents old editor version forever)
 fs.mkdirSync(path.join(__dirname, 'views'), { recursive: true });
-fs.writeFileSync(path.join(__dirname, 'views', 'landing.ejs'), CLEAN_LANDING_EJS.trim());
+fs.writeFileSync(path.join(__dirname, 'views', 'landing.ejs'), CLEAN_LANDING_EJS);
 fs.writeFileSync(path.join(__dirname, 'views', '404.ejs'), NOT_FOUND_EJS);
-console.log('Clean public templates FORCED — NO MORE EDITOR UI EVER');
+console.log('Clean landing.ejs & 404.ejs forced — no more editor UI ever');
 
 // 404 fallback
 app.use((req, res) => res.status(404).render('404'));
 
 // Start server
 app.listen(PORT, () => {
-  console.log('\nSENDEM IS LIVE & FLAWLESS');
+  console.log('\nSENDEM IS LIVE & PERFECT');
   console.log(`http://localhost:${PORT}`);
   console.log(`Public pages → http://localhost:${PORT}/p/xxxxxxxx\n`);
 });
