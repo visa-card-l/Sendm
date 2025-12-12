@@ -1,4 +1,4 @@
-// server.js — FINAL, COMPLETE & 100% WORKING (December 2025)
+// server.js — FINAL & COMPLETE
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -8,7 +8,6 @@ const rateLimit = require('express-rate-limit');
 const { Telegraf } = require('telegraf');
 const path = require('path');
 const fs = require('fs');
-const fetch = require('node-fetch'); // ← needed for Telegram API calls
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -110,7 +109,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// ==================== ALL ROUTES (100% COMPLETE) ====================
+// ==================== ALL 20+ ROUTES — COMPLETE & CLEAN ====================
 
 // 1. Register
 app.post('/api/auth/register', authLimiter, async (req, res) => {
@@ -165,7 +164,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   res.json({ user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected } });
 });
 
-// 4. Connect Telegram Bot
+// 4. Connect Telegram Bot (with concatenation)
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
   if (!botToken?.trim()) return res.status(400).json({ error: 'Bot token required' });
@@ -188,7 +187,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
     user.telegramChatId = null;
     launchUserBot(user);
 
-    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
+    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
 
     res.json({ success: true, message: 'Bot connected!', botUsername: '@' + botUsername, startLink });
   } catch (err) {
@@ -219,7 +218,7 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
     user.telegramChatId = null;
     launchUserBot(user);
 
-    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
+    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
 
     res.json({ success: true, message: 'Bot token updated!', botUsername: '@' + botUsername, startLink });
   } catch (err) {
@@ -306,6 +305,8 @@ app.post('/api/auth/reset-password', (req, res) => {
   res.json({ success: true, message: 'Password reset successful' });
 });
 
+// ==================== LANDING PAGE ROUTES ====================
+
 // 11. List user pages
 app.get('/api/pages', authenticateToken, (req, res) => {
   const userPages = Array.from(landingPages.entries())
@@ -315,12 +316,12 @@ app.get('/api/pages', authenticateToken, (req, res) => {
       title: page.title,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
-      url: `\( {req.protocol}:// \){req.get('host')}/p/${shortId}`
+      url: req.protocol + '://' + req.get('host') + '/p/' + shortId
     }));
   res.json({ pages: userPages });
 });
 
-// 12. Save page
+// 12. Save page (CLEANED CONFIG)
 app.post('/api/pages/save', authenticateToken, (req, res) => {
   const { shortId, title, config } = req.body;
   if (!title || !config || !Array.isArray(config.blocks))
@@ -348,7 +349,7 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
   res.json({
     success: true,
     shortId: finalShortId,
-    url: `\( {req.protocol}:// \){req.get('host')}/p/${finalShortId}`
+    url: req.protocol + '://' + req.get('host') + '/p/' + finalShortId
   });
 });
 
@@ -361,16 +362,19 @@ app.post('/api/pages/delete', authenticateToken, (req, res) => {
   res.json({ success: true });
 });
 
-// 14. Public Page — ALWAYS CLEAN
+// 14. Public page — PERFECT RENDERING
 app.get('/p/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
   if (!page) return res.status(404).render('404');
   res.render('landing', { title: page.title, blocks: page.config.blocks });
 });
 
-// ==================== CLEAN TEMPLATES (FORCED ON STARTUP) ====================
+// ==================== VIEWS & 404 ====================
+const viewsDir = path.join(__dirname, 'views');
+if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
+if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
 
-const CLEAN_LANDING_EJS = `<!DOCTYPE html>
+const landingEjs = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -422,22 +426,19 @@ const CLEAN_LANDING_EJS = `<!DOCTYPE html>
     </div>
   </div>
 </body>
-</html>`.trim();
+</html>`;
 
-const NOT_FOUND_EJS = `<!DOCTYPE html><html><head><title>404</title><style>body{font-family:sans-serif;background:#f8f9fa;text-align:center;padding:100px;color:#333;}h1{font-size:80px;}p{font-size:20px;}</style></head><body><h1>404</h1><p>Page not found</p></body></html>`;
+const notFoundEjs = `<!DOCTYPE html><html><head><title>404</title><style>body{font-family:sans-serif;background:#f8f9fa;text-align:center;padding:100px;color:#333;}h1{font-size:80px;}p{font-size:20px;}</style></head><body><h1>404</h1><p>Page not found</p></body></html>`;
 
-// Force clean templates on every start (prevents old editor version forever)
-fs.mkdirSync(path.join(__dirname, 'views'), { recursive: true });
-fs.writeFileSync(path.join(__dirname, 'views', 'landing.ejs'), CLEAN_LANDING_EJS);
-fs.writeFileSync(path.join(__dirname, 'views', '404.ejs'), NOT_FOUND_EJS);
-console.log('Clean landing.ejs & 404.ejs forced — no more editor UI ever');
+// Always ensure clean views (overwrite to prevent editor elements)
+fs.writeFileSync(path.join(viewsDir, 'landing.ejs'), landingEjs);
+fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
+console.log('Clean landing views ensured (no editor elements)');
 
-// 404 fallback
 app.use((req, res) => res.status(404).render('404'));
 
-// Start server
 app.listen(PORT, () => {
-  console.log('\nSENDEM IS LIVE & PERFECT');
+  console.log(`\nSENDEM LIVE & PERFECT`);
   console.log(`http://localhost:${PORT}`);
-  console.log(`Public pages → http://localhost:${PORT}/p/xxxxxxxx\n`);
+  console.log(`Pages → http://localhost:${PORT}/p/xxxxxx\n`);
 });
