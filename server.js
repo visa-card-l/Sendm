@@ -321,7 +321,7 @@ app.get('/api/pages', authenticateToken, (req, res) => {
   res.json({ pages: userPages });
 });
 
-// 12. Save page (CLEANED CONFIG)
+// 12. Save page (ENHANCED CLEANING FOR LANDING PAGE ONLY)
 app.post('/api/pages/save', authenticateToken, (req, res) => {
   const { shortId, title, config } = req.body;
   if (!title || !config || !Array.isArray(config.blocks))
@@ -330,13 +330,58 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
   const finalShortId = shortId || uuidv4().slice(0, 8);
   const now = new Date().toISOString();
 
-  const cleanBlocks = config.blocks.map(block => {
-    if (block.type === 'text') return { type: 'text', tag: block.tag || 'p', content: (block.content || '').trim() || 'New text' };
-    if (block.type === 'image') return { type: 'image', src: block.src };
-    if (block.type === 'button') return { type: 'button', text: (block.text || 'Click Here').trim(), href: block.href === '#' ? '' : block.href };
-    if (block.type === 'form') return { type: 'form', html: block.html };
-    return null;
-  }).filter(Boolean);
+  // Method to collect only landing-page-ready blocks: Exclude editor UI elements
+  // - Filter by type (only content types)
+  // - For buttons: Exclude short text (e.g., "x"), or text indicating editor controls (e.g., "Add Image", "Delete")
+  // - For text: Skip empty or placeholder content
+  // - For images: Skip missing or placeholder srcs (e.g., data: URLs for icons or empty)
+  // - For forms: Ensure valid HTML
+  // This ensures only user-intended content is saved for public rendering
+  const cleanBlocks = config.blocks
+    .map(block => {
+      // Skip any block with an 'isEditor' flag or editor-specific id/class
+      if (block.isEditor || (block.id && (block.id.includes('editor-') || block.id.includes('control-')))) {
+        return null;
+      }
+
+      if (block.type === 'text') {
+        const content = (block.content || '').trim();
+        if (!content || content === 'New text' || content.length < 1) return null;
+        return { type: 'text', tag: block.tag || 'p', content };
+      }
+
+      if (block.type === 'image') {
+        const src = block.src?.trim();
+        if (!src || src.startsWith('data:image/') && src.length < 100) { // Skip tiny placeholders/icons
+          return null;
+        }
+        return { type: 'image', src };
+      }
+
+      if (block.type === 'button') {
+        const text = (block.text || '').trim();
+        const lowerText = text.toLowerCase();
+        // Exclude editor buttons: short text like "x", or phrases like "add image", "delete", "remove"
+        if (!text || text.length < 3 || lowerText === 'x' || lowerText.includes('add ') || lowerText.includes('delete') || lowerText.includes('remove') || lowerText.includes('close')) {
+          return null;
+        }
+        return { type: 'button', text, href: block.href === '#' ? '' : (block.href || '') };
+      }
+
+      if (block.type === 'form') {
+        const html = block.html?.trim();
+        if (!html || html.length < 10) return null; // Skip empty forms
+        return { type: 'form', html };
+      }
+
+      // Unknown types (e.g., editor tools) are skipped
+      return null;
+    })
+    .filter(Boolean);
+
+  if (cleanBlocks.length === 0) {
+    return res.status(400).json({ error: 'No valid content blocks found. Add text, images, buttons, or forms.' });
+  }
 
   landingPages.set(finalShortId, {
     userId: req.user.userId,
