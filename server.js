@@ -550,29 +550,19 @@ const formEjs = `<!DOCTYPE html>
     :root{--primary:#1564C0;--primary-light:#3485e5;--gray-800:#343a40;--gray-600:#6c757d;}
     *{margin:0;padding:0;box-sizing:border-box;}
     body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f8fc;color:var(--gray-800);line-height:1.7;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
-    .form-container{max-width:500px;width:100%;background:white;border-radius:24px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.12);}
-    .form-header{padding:60px 40px;text-align:center;background:linear-gradient(135deg,var(--primary),var(--primary-light));color:white;}
-    .form-header h1{font-size:32px;font-weight:700;margin:0 0 10px;}
-    .form-header p{font-size:16px;opacity:0.9;margin:0;}
-    .form-body{padding:40px;border-top:1px solid rgba(255,255,255,0.2);}
+    .form-container{max-width:500px;width:100%;background:white;border-radius:24px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.12);padding:40px;}
     .form-block{margin:0;text-align:left;}
     .form-block input{width:100%;padding:16px;margin:10px 0;border-radius:12px;border:1px solid #ddd;font-size:16px;background:#fafbff;transition:all .2s;}
     .form-block input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 4px rgba(21,100,192,0.12);}
     .form-block button{width:100%;padding:16px;margin-top:10px;background:var(--primary);color:white;border:none;font-weight:600;cursor:pointer;border-radius:12px;transition:all .3s;box-shadow:0 4px 15px rgba(21,100,192,0.3);}
     .form-block button:hover{background:var(--primary-light);transform:translateY(-2px);box-shadow:0 8px 25px rgba(21,100,192,0.4);}
-    .footer{padding:30px 40px;background:#f9f9f9;text-align:center;color:#888;font-size:14px;border-top:1px solid #eee;}
-    @media(max-width:640px){.form-header,.form-body{padding-left:20px;padding-right:20px;}.form-header h1{font-size:28px;}}
+    .footer{padding:30px 0;background:#f9f9f9;text-align:center;color:#888;font-size:14px;border-top:1px solid #eee;}
+    @media(max-width:640px){.form-container{padding:20px;}}
   </style>
 </head>
 <body>
   <div class="form-container">
-    <div class="form-header">
-      <h1><%= title %></h1>
-      <p>Fill out the details below</p>
-    </div>
-    <div class="form-body">
-      <div class="form-block"><%- html %></div>
-    </div>
+    <div class="form-block"><%- html %></div>
     <div class="footer">
       © <%= new Date().getFullYear() %> Sendm
     </div>
