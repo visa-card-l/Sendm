@@ -28,6 +28,7 @@ let users = [];
 const activeBots = new Map();
 const resetTokens = new Map();
 const landingPages = new Map();
+const formPages = new Map(); // Separate storage for form-specific configs
 
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
@@ -285,7 +286,7 @@ app.post('/api/auth/verify-reset-code', (req, res) => {
 });
 
 // 10. Reset Password
-app.post('/api/auth/reset-password', (req, res) => {
+app.post('/api/auth/reset-password', async (req, res) => {
   const { resetToken, newPassword } = req.body;
   if (!resetToken || !newPassword || newPassword.length < 6)
     return res.status(400).json({ error: 'Valid token and password required' });
@@ -299,7 +300,7 @@ app.post('/api/auth/reset-password', (req, res) => {
   const user = users.find(u => u.id === entry.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  user.password = bcrypt.hashSync(newPassword, 12);
+  user.password = await bcrypt.hash(newPassword, 12);
   resetTokens.delete(resetToken);
 
   res.json({ success: true, message: 'Password reset successful' });
@@ -414,6 +415,71 @@ app.get('/p/:shortId', (req, res) => {
   res.render('landing', { title: page.title, blocks: page.config.blocks });
 });
 
+// ==================== FORM-SPECIFIC ROUTES ====================
+
+// 15. List user forms
+app.get('/api/forms', authenticateToken, (req, res) => {
+  const userForms = Array.from(formPages.entries())
+    .filter(([_, form]) => form.userId === req.user.userId)
+    .map(([shortId, formData]) => ({
+      shortId,
+      title: formData.title,
+      createdAt: formData.createdAt,
+      updatedAt: formData.updatedAt,
+      url: req.protocol + '://' + req.get('host') + '/f/' + shortId
+    }));
+  res.json({ forms: userForms });
+});
+
+// 16. Save form config (Dedicated for forms, extracts form block)
+app.post('/api/forms/save', authenticateToken, (req, res) => {
+  const { shortId, title, config } = req.body;
+  if (!title || !config || !Array.isArray(config.blocks))
+    return res.status(400).json({ error: 'Title and config.blocks required' });
+
+  const finalShortId = shortId || uuidv4().slice(0, 8);
+  const now = new Date().toISOString();
+
+  // Extract and clean only the form block (ignore other blocks for pure form pages)
+  const formBlock = config.blocks.find(block => block.type === 'form');
+  if (!formBlock || !formBlock.html?.trim()) {
+    return res.status(400).json({ error: 'Valid form block required' });
+  }
+
+  // Clean the form HTML (basic sanitization: ensure it's safe HTML)
+  const cleanHtml = formBlock.html.trim().replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, ''); // Strip scripts
+
+  formPages.set(finalShortId, {
+    userId: req.user.userId,
+    title: title.trim(),
+    html: cleanHtml,
+    createdAt: formPages.get(finalShortId)?.createdAt || now,
+    updatedAt: now
+  });
+
+  res.json({
+    success: true,
+    shortId: finalShortId,
+    url: req.protocol + '://' + req.get('host') + '/f/' + finalShortId
+  });
+});
+
+// 17. Delete form
+app.post('/api/forms/delete', authenticateToken, (req, res) => {
+  const { shortId } = req.body;
+  const formData = formPages.get(shortId);
+  if (!formData || formData.userId !== req.user.userId) return res.status(404).json({ error: 'Form not found' });
+  formPages.delete(shortId);
+  res.json({ success: true });
+});
+
+// 18. Public form page — DEDICATED RENDERING
+app.get('/f/:shortId', (req, res) => {
+  const formData = formPages.get(req.params.shortId);
+  if (!formData) return res.status(404).render('404');
+  res.render('form', { title: formData.title, html: formData.html });
+});
+
 // ==================== VIEWS & 404 ====================
 const viewsDir = path.join(__dirname, 'views');
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
@@ -473,17 +539,60 @@ const landingEjs = `<!DOCTYPE html>
 </body>
 </html>`;
 
+const formEjs = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %></title>
+  <meta name="description" content="Custom form built with Sendm">
+  <style>
+    :root{--primary:#1564C0;--primary-light:#3485e5;--gray-800:#343a40;--gray-600:#6c757d;}
+    *{margin:0;padding:0;box-sizing:border-box;}
+    body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f8fc;color:var(--gray-800);line-height:1.7;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
+    .form-container{max-width:500px;width:100%;background:white;border-radius:24px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.12);}
+    .form-header{padding:60px 40px;text-align:center;background:linear-gradient(135deg,var(--primary),var(--primary-light));color:white;}
+    .form-header h1{font-size:32px;font-weight:700;margin:0 0 10px;}
+    .form-header p{font-size:16px;opacity:0.9;margin:0;}
+    .form-body{padding:40px;border-top:1px solid rgba(255,255,255,0.2);}
+    .form-block{margin:0;text-align:left;}
+    .form-block input{width:100%;padding:16px;margin:10px 0;border-radius:12px;border:1px solid #ddd;font-size:16px;background:#fafbff;transition:all .2s;}
+    .form-block input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 4px rgba(21,100,192,0.12);}
+    .form-block button{width:100%;padding:16px;margin-top:10px;background:var(--primary);color:white;border:none;font-weight:600;cursor:pointer;border-radius:12px;transition:all .3s;box-shadow:0 4px 15px rgba(21,100,192,0.3);}
+    .form-block button:hover{background:var(--primary-light);transform:translateY(-2px);box-shadow:0 8px 25px rgba(21,100,192,0.4);}
+    .footer{padding:30px 40px;background:#f9f9f9;text-align:center;color:#888;font-size:14px;border-top:1px solid #eee;}
+    @media(max-width:640px){.form-header,.form-body{padding-left:20px;padding-right:20px;}.form-header h1{font-size:28px;}}
+  </style>
+</head>
+<body>
+  <div class="form-container">
+    <div class="form-header">
+      <h1><%= title %></h1>
+      <p>Fill out the details below</p>
+    </div>
+    <div class="form-body">
+      <div class="form-block"><%- html %></div>
+    </div>
+    <div class="footer">
+      © <%= new Date().getFullYear() %> Sendm
+    </div>
+  </div>
+</body>
+</html>`;
+
 const notFoundEjs = `<!DOCTYPE html><html><head><title>404</title><style>body{font-family:sans-serif;background:#f8f9fa;text-align:center;padding:100px;color:#333;}h1{font-size:80px;}p{font-size:20px;}</style></head><body><h1>404</h1><p>Page not found</p></body></html>`;
 
 // Always ensure clean views (overwrite to prevent editor elements)
 fs.writeFileSync(path.join(viewsDir, 'landing.ejs'), landingEjs);
+fs.writeFileSync(path.join(viewsDir, 'form.ejs'), formEjs);
 fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
-console.log('Clean landing views ensured (no editor elements)');
+console.log('Clean views ensured: landing.ejs, form.ejs, 404.ejs');
 
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
   console.log(`\nSENDEM LIVE & PERFECT`);
   console.log(`http://localhost:${PORT}`);
-  console.log(`Pages → http://localhost:${PORT}/p/xxxxxx\n`);
+  console.log(`Landing Pages → http://localhost:${PORT}/p/xxxxxx`);
+  console.log(`Forms → http://localhost:${PORT}/f/xxxxxx\n`);
 });
