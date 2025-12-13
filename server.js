@@ -1,3 +1,4 @@
+
 // server.js — FINAL & COMPLETE
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -501,7 +502,7 @@ const landingEjs = `<!DOCTYPE html>
     h2{font-size:36px;font-weight:700;margin:40px 0 20px;color:var(--gray-800);}
     p{font-size:19px;color:var(--gray-600);margin-bottom:40px;max-width:600px;margin-left:auto;margin-right:auto;}
     .hero-img{max-width:100%;border-radius:18px;box-shadow:0 15px 40px rgba(0,0,0,0.15);margin:50px 0;}
-    .cta{display:inline-block;padding:22px 70px;font-size:21px;font-weight:600;background:var(--primary);color:white;text-decoration:none;border-radius:16px;box-shadow:0 12px 35px rgba(21,100,192,0.4);transition:all .3s;}
+    .cta{display:inline-block;padding:22px 70px;font-size:21px;font-weight:600;background:var(--primary);color:white;text-decoration:none;border-radius:16px;box-shadow:0 12px 35px rgba(21,100,192,0.4);transition:all .3s;margin-bottom:20px;}
     .cta:hover{background:var(--primary-light);transform:translateY(-5px);box-shadow:0 20px 50px rgba(21,100,192,0.5);}
     .form-block{padding:40px;background:#f9fbff;border-radius:20px;margin:50px 0;border:1px solid #e0e7ff;text-align:left;}
     .form-block h3{margin-bottom:24px;font-size:24px;text-align:center;}
