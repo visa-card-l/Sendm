@@ -1,4 +1,4 @@
-// server.js — FINAL & COMPLETE (WITH PUBLIC EDITING SUPPORT)
+// server.js — FINAL & COMPLETE (WITH FIXED CORS + ALL ROUTES + FULL AUTH + TELEGRAM 2FA)
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -12,11 +12,21 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
+// ==================== CORS FIX — FULLY PERMISSIVE FOR PUBLIC READS ====================
+app.use(cors({
+  origin: true,                  // Allows requests from any origin (including your editor.html)
+  credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Handle preflight OPTIONS requests for all routes
+app.options('*', cors());
+
+// ==================== MIDDLEWARE ====================
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
-app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
@@ -28,7 +38,7 @@ let users = [];
 const activeBots = new Map();
 const resetTokens = new Map();
 const landingPages = new Map();
-const formPages = new Map(); // Separate storage for form-specific configs
+const formPages = new Map();
 
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
@@ -79,7 +89,7 @@ You will now receive login & recovery codes here.
 
 <i>Keep this chat private • Never share your bot</i>
       `);
-      console.log(`2FA Connected: {user.email} → ${chatId}`);
+      console.log(`2FA Connected: \( {user.email} → \){chatId}`);
     } else {
       await ctx.replyWithHTML(`<b>Invalid or expired link</b>`);
     }
@@ -110,7 +120,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// ==================== ALL ROUTES ====================
+// ==================== AUTH ROUTES ====================
 
 // 1. Register
 app.post('/api/auth/register', authLimiter, async (req, res) => {
@@ -198,7 +208,6 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
 // 5. Change Bot Token
 app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
-  // ... (unchanged, same as previous version)
   const { newBotToken } = req.body;
   if (!newBotToken?.trim()) return res.status(400).json({ error: 'New bot token required' });
 
@@ -230,7 +239,6 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
 // 6. Disconnect Telegram
 app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
-  // ... (unchanged)
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
@@ -245,18 +253,72 @@ app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
 
 // 7. Bot Status
 app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
-  // ... (unchanged)
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
   res.json({ activated: user.isTelegramConnected, chatId: user.telegramChatId || null });
 });
 
-// 8-10. Forgot/Verify/Reset Password (unchanged)
-// ... (same as your original code)
+// 8. Forgot Password (send code)
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email required' });
+
+  const user = users.find(u => u.email === email.toLowerCase());
+  if (!user) return res.json({ success: true, message: 'If account exists, code was sent.' });
+
+  if (!user.isTelegramConnected) return res.status(400).json({ error: 'Telegram 2FA not connected' });
+
+  const code = generate2FACode();
+  const resetToken = uuidv4();
+  const expiresAt = Date.now() + 10 * 60 * 1000;
+
+  resetTokens.set(resetToken, { userId: user.id, code, expiresAt });
+  const sent = await send2FACodeViaBot(user, code);
+  if (!sent) return res.status(500).json({ error: 'Failed to send code' });
+
+  res.json({ success: true, message: 'Code sent!', resetToken });
+});
+
+// 9. Verify Reset Code
+app.post('/api/auth/verify-reset-code', (req, res) => {
+  const { resetToken, code } = req.body;
+  if (!resetToken || !code) return res.status(400).json({ error: 'Token and code required' });
+
+  const entry = resetTokens.get(resetToken);
+  if (!entry || Date.now() > entry.expiresAt) {
+    resetTokens.delete(resetToken);
+    return res.status(400).json({ error: 'Invalid or expired code' });
+  }
+
+  if (entry.code !== code.trim()) return res.status(400).json({ error: 'Wrong code' });
+
+  res.json({ success: true, message: 'Verified', userId: entry.userId });
+});
+
+// 10. Reset Password
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { resetToken, newPassword } = req.body;
+  if (!resetToken || !newPassword || newPassword.length < 6)
+    return res.status(400).json({ error: 'Valid token and password required' });
+
+  const entry = resetTokens.get(resetToken);
+  if (!entry || Date.now() > entry.expiresAt) {
+    resetTokens.delete(resetToken);
+    return res.status(400).json({ error: 'Invalid session' });
+  }
+
+  const user = users.find(u => u.id === entry.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  user.password = await bcrypt.hash(newPassword, 12);
+  resetTokens.delete(resetToken);
+
+  res.json({ success: true, message: 'Password reset successful' });
+});
 
 // ==================== LANDING PAGE ROUTES ====================
 
-// 11. List user pages (authenticated)
+// List user pages (authenticated)
 app.get('/api/pages', authenticateToken, (req, res) => {
   const userPages = Array.from(landingPages.entries())
     .filter(([_, page]) => page.userId === req.user.userId)
@@ -270,7 +332,7 @@ app.get('/api/pages', authenticateToken, (req, res) => {
   res.json({ pages: userPages });
 });
 
-// **NEW** Public: Get single landing page config for editing (NO AUTH)
+// Public: Get single landing page config (NO AUTH)
 app.get('/api/pages/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
   if (!page) return res.status(404).json({ error: 'Page not found' });
@@ -282,7 +344,7 @@ app.get('/api/pages/:shortId', (req, res) => {
   });
 });
 
-// 12. Save page (PROTECTED - JWT required)
+// Save page (PROTECTED)
 app.post('/api/pages/save', authenticateToken, (req, res) => {
   const { shortId, title, config } = req.body;
   if (!title || !config || !Array.isArray(config.blocks))
@@ -293,9 +355,7 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
 
   const cleanBlocks = config.blocks
     .map(block => {
-      if (block.isEditor || (block.id && (block.id.includes('editor-') || block.id.includes('control-')))) {
-        return null;
-      }
+      if (block.isEditor || (block.id && (block.id.includes('editor-') || block.id.includes('control-')))) return null;
 
       if (block.type === 'text') {
         const content = (block.content || '').trim();
@@ -312,9 +372,7 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
       if (block.type === 'button') {
         const text = (block.text || '').trim();
         const lowerText = text.toLowerCase();
-        if (!text || text.length < 3 || lowerText === 'x' || lowerText.includes('add ') || lowerText.includes('delete') || lowerText.includes('remove') || lowerText.includes('close')) {
-          return null;
-        }
+        if (!text || text.length < 3 || lowerText === 'x' || lowerText.includes('add ') || lowerText.includes('delete') || lowerText.includes('remove') || lowerText.includes('close')) return null;
         return { type: 'button', text, href: block.href === '#' ? '' : (block.href || '') };
       }
 
@@ -347,7 +405,7 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
   });
 });
 
-// 13. Delete page (protected)
+// Delete page (protected)
 app.post('/api/pages/delete', authenticateToken, (req, res) => {
   const { shortId } = req.body;
   const page = landingPages.get(shortId);
@@ -356,24 +414,23 @@ app.post('/api/pages/delete', authenticateToken, (req, res) => {
   res.json({ success: true });
 });
 
-// 14. Public page rendering
+// Public rendering
 app.get('/p/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
   if (!page) return res.status(404).render('404');
   res.render('landing', { title: page.title, blocks: page.config.blocks });
 });
 
-// **NEW** Optional direct editor entry point
+// Optional direct editor URL
 app.get('/edit/page/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
   if (!page) return res.status(404).render('404');
-  // Replace with your actual landing page editor template
   res.render('editor-landing', { shortId: req.params.shortId, initialTitle: page.title });
 });
 
-// ==================== FORM-SPECIFIC ROUTES ====================
+// ==================== FORM ROUTES ====================
 
-// 15. List user forms (authenticated)
+// List forms (authenticated)
 app.get('/api/forms', authenticateToken, (req, res) => {
   const userForms = Array.from(formPages.entries())
     .filter(([_, form]) => form.userId === req.user.userId)
@@ -387,7 +444,7 @@ app.get('/api/forms', authenticateToken, (req, res) => {
   res.json({ forms: userForms });
 });
 
-// **NEW** Public: Get single form config for editing (NO AUTH)
+// Public: Get single form config (NO AUTH)
 app.get('/api/forms/:shortId', (req, res) => {
   const formData = formPages.get(req.params.shortId);
   if (!formData) return res.status(404).json({ error: 'Form not found' });
@@ -395,11 +452,11 @@ app.get('/api/forms/:shortId', (req, res) => {
   res.json({
     shortId: req.params.shortId,
     title: formData.title,
-    config: { blocks: [{ type: 'form', html: formData.html }] } // matches editor format
+    config: { blocks: [{ type: 'form', html: formData.html }] }
   });
 });
 
-// 16. Save form (PROTECTED)
+// Save form (PROTECTED)
 app.post('/api/forms/save', authenticateToken, (req, res) => {
   const { shortId, title, config } = req.body;
   if (!title || !config || !Array.isArray(config.blocks))
@@ -430,7 +487,7 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
   });
 });
 
-// 17. Delete form (protected)
+// Delete form (protected)
 app.post('/api/forms/delete', authenticateToken, (req, res) => {
   const { shortId } = req.body;
   const formData = formPages.get(shortId);
@@ -439,18 +496,17 @@ app.post('/api/forms/delete', authenticateToken, (req, res) => {
   res.json({ success: true });
 });
 
-// 18. Public form rendering
+// Public form rendering
 app.get('/f/:shortId', (req, res) => {
   const formData = formPages.get(req.params.shortId);
   if (!formData) return res.status(404).render('404');
   res.render('form', { title: formData.title, html: formData.html });
 });
 
-// **NEW** Optional direct form editor entry point
+// Optional direct form editor URL
 app.get('/edit/form/:shortId', (req, res) => {
   const formData = formPages.get(req.params.shortId);
   if (!formData) return res.status(404).render('404');
-  // Replace with your actual form editor template
   res.render('editor-form', { shortId: req.params.shortId, initialTitle: formData.title });
 });
 
