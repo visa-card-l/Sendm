@@ -1,7 +1,5 @@
-// server.js — FINAL WORKING VERSION (December 18, 2025)
-// Landing pages: simple EJS (no subscription logic)
-// Form pages: auto-redirect subscription using ONLY string concatenation for the Telegram link
-// No template variables used in client-side script for deepLink
+// server.js — UPDATED VERSION (December 18, 2025)
+// Change: Same Telegram chat ID now updates name/email to the latest submission instead of creating duplicates
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -86,22 +84,44 @@ function launchUserBot(user) {
       const sub = pendingSubscribers.get(payload);
       if (sub.userId === user.id) {
         const list = allSubmissions.get(user.id) || [];
-        const entry = list.find(e => e.email === sub.email && e.shortId === sub.shortId && e.status === 'pending');
+        
+        // First: Try to find and update an existing subscribed entry with the same chatId
+        let existingSubscribed = list.find(e => 
+          e.telegramChatId === chatId && 
+          e.status === 'subscribed'
+        );
 
-        if (entry) {
-          entry.telegramChatId = chatId;
-          entry.subscribedAt = new Date().toISOString();
-          entry.status = 'subscribed';
+        if (existingSubscribed) {
+          // Update name and email to the latest ones
+          existingSubscribed.name = sub.name;
+          existingSubscribed.email = sub.email;
+          existingSubscribed.subscribedAt = new Date().toISOString();
+          // Keep the same shortId or update if needed? Here we keep original page
         } else {
-          list.push({
-            name: sub.name,
-            email: sub.email,
-            telegramChatId: chatId,
-            shortId: sub.shortId,
-            submittedAt: new Date().toISOString(),
-            subscribedAt: new Date().toISOString(),
-            status: 'subscribed'
-          });
+          // Second: Try to update the matching pending entry (original behavior)
+          const entry = list.find(e => 
+            e.email === sub.email && 
+            e.shortId === sub.shortId && 
+            e.status === 'pending'
+          );
+
+          if (entry) {
+            entry.telegramChatId = chatId;
+            entry.subscribedAt = new Date().toISOString();
+            entry.status = 'subscribed';
+            // Optionally update name/email here too (already matches)
+          } else {
+            // Third: Create new entry (fallback)
+            list.push({
+              name: sub.name,
+              email: sub.email,
+              telegramChatId: chatId,
+              shortId: sub.shortId,
+              submittedAt: new Date().toISOString(),
+              subscribedAt: new Date().toISOString(),
+              status: 'subscribed'
+            });
+          }
         }
 
         allSubmissions.set(user.id, list);
@@ -749,7 +769,6 @@ const formEjs = `<!DOCTYPE html>
         const data = await res.json();
 
         if (data.success) {
-          // Build the Telegram deep link using string concatenation only
           const tgLink = 'https://t.me/' + data.deepLink.split('?start=')[0].replace('https://t.me/', '') + '?start=' + data.deepLink.split('?start=')[1];
           window.location.href = tgLink;
         } else {
@@ -776,9 +795,7 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log(`\nSENDEM SERVER — FINAL CLEAN & WORKING`);
+  console.log(`\nSENDEM SERVER — UPDATED (Same chat ID updates name/email)`);
   console.log(`http://localhost:${PORT}`);
-  console.log(`Landing pages: simple EJS`);
-  console.log(`Form pages: subscription with TG link built via string concatenation`);
-  console.log(`All features ready\n`);
+  console.log(`Now: Same Telegram user → latest name/email only\n`);
 });
