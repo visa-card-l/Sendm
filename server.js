@@ -1,8 +1,10 @@
-// server.js — UPDATED VERSION (December 18, 2025)
+// server.js — UPDATED VERSION (December 19, 2025)
 // Changes:
 // - Landing page buttons now have proper vertical spacing (margin-bottom: 30px)
 // - Accepts email OR phone number (no validation)
 // - Same Telegram chat ID updates to latest name/contact
+// - NEW: Prevent duplicate contacts — same contact (email/phone) replaces the old entry
+// - NEW: Bulk delete endpoint for contacts (/api/contacts/delete)
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -37,7 +39,7 @@ const formPages = new Map();
 
 // Subscription system
 const pendingSubscribers = new Map();
-const allSubmissions = new Map();
+const allSubmissions = new Map(); // userId → array of contact objects
 
 function escapeHtml(text) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -85,41 +87,31 @@ function launchUserBot(user) {
       const sub = pendingSubscribers.get(payload);
       if (sub.userId === user.id) {
         const list = allSubmissions.get(user.id) || [];
-        
-        // Prioritize updating existing subscribed entry with same chatId
-        let existingSubscribed = list.find(e => 
-          e.telegramChatId === chatId && 
-          e.status === 'subscribed'
-        );
 
-        if (existingSubscribed) {
-          existingSubscribed.name = sub.name;
-          existingSubscribed.contact = sub.contact;
-          existingSubscribed.subscribedAt = new Date().toISOString();
+        // Check if this contact already exists (by contact field)
+        const existingIndex = list.findIndex(e => e.contact === sub.contact);
+
+        if (existingIndex !== -1) {
+          // Update existing contact
+          list[existingIndex] = {
+            ...list[existingIndex],
+            name: sub.name,
+            telegramChatId: chatId,
+            subscribedAt: new Date().toISOString(),
+            status: 'subscribed',
+            shortId: sub.shortId
+          };
         } else {
-          // Update matching pending entry
-          const entry = list.find(e => 
-            e.contact === sub.contact && 
-            e.shortId === sub.shortId && 
-            e.status === 'pending'
-          );
-
-          if (entry) {
-            entry.telegramChatId = chatId;
-            entry.subscribedAt = new Date().toISOString();
-            entry.status = 'subscribed';
-          } else {
-            // Create new entry
-            list.push({
-              name: sub.name,
-              contact: sub.contact,
-              telegramChatId: chatId,
-              shortId: sub.shortId,
-              submittedAt: new Date().toISOString(),
-              subscribedAt: new Date().toISOString(),
-              status: 'subscribed'
-            });
-          }
+          // Add new contact
+          list.push({
+            name: sub.name,
+            contact: sub.contact,
+            telegramChatId: chatId,
+            shortId: sub.shortId,
+            submittedAt: new Date().toISOString(),
+            subscribedAt: new Date().toISOString(),
+            status: 'subscribed'
+          });
         }
 
         allSubmissions.set(user.id, list);
@@ -540,25 +532,41 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   const owner = users.find(u => u.id === page.userId);
   if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Broadcast bot not connected' });
 
+  const contactValue = email.trim(); // this is email or phone
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
   const list = allSubmissions.get(owner.id) || [];
-  list.push({
+
+  // Check for existing contact with same contact value
+  const existingIndex = list.findIndex(c => c.contact === contactValue);
+
+  const newEntry = {
     name: name.trim(),
-    contact: email.trim(), // email or phone
+    contact: contactValue,
     telegramChatId: null,
     shortId,
     submittedAt: new Date().toISOString(),
     subscribedAt: null,
     status: 'pending'
-  });
+  };
+
+  if (existingIndex !== -1) {
+    // Replace existing entry (keep old telegramChatId if already subscribed)
+    newEntry.telegramChatId = list[existingIndex].telegramChatId;
+    newEntry.subscribedAt = list[existingIndex].subscribedAt;
+    newEntry.status = list[existingIndex].status;
+    list[existingIndex] = newEntry;
+  } else {
+    list.push(newEntry);
+  }
+
   allSubmissions.set(owner.id, list);
 
   pendingSubscribers.set(payload, {
     userId: owner.id,
     shortId,
     name: name.trim(),
-    contact: email.trim(),
+    contact: contactValue,
     createdAt: Date.now()
   });
 
@@ -594,6 +602,30 @@ app.get('/api/contacts', authenticateToken, (req, res) => {
   res.json({ success: true, contacts, stats });
 });
 
+// NEW: Bulk delete contacts
+app.post('/api/contacts/delete', authenticateToken, (req, res) => {
+  const { contacts } = req.body; // array of contact strings (email/phone values)
+  if (!Array.isArray(contacts) || contacts.length === 0) {
+    return res.status(400).json({ error: 'Provide an array of contact values to delete' });
+  }
+
+  const userId = req.user.userId;
+  let list = allSubmissions.get(userId) || [];
+
+  const initialLength = list.length;
+  list = list.filter(c => !contacts.includes(c.contact));
+
+  allSubmissions.set(userId, list);
+
+  const deletedCount = initialLength - list.length;
+
+  res.json({
+    success: true,
+    deletedCount,
+    remaining: list.length
+  });
+});
+
 app.post('/api/broadcast', authenticateToken, async (req, res) => {
   const { message } = req.body;
   if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
@@ -618,7 +650,7 @@ app.post('/api/broadcast', authenticateToken, async (req, res) => {
   res.json({ success: true, sent, failed, total: targets.length });
 });
 
-// ==================== VIEWS (UPDATED LANDING.EJS WITH BUTTON SPACING) ====================
+// ==================== VIEWS ====================
 const viewsDir = path.join(__dirname, 'views');
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
 if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
@@ -789,8 +821,9 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log(`\nSENDEM SERVER — FINAL WITH BUTTON SPACING`);
+  console.log(`\nSENDEM SERVER — WITH BULK DELETE & NO DUPLICATE CONTACTS`);
   console.log(`http://localhost:${PORT}`);
-  console.log(`✓ Multiple buttons on landing pages now have space between them`);
+  console.log(`✓ Duplicate contacts are now replaced`);
+  console.log(`✓ Added /api/contacts/delete (POST) for bulk deletion`);
   console.log(`✓ All previous features intact\n`);
 });
