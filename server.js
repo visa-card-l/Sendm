@@ -6,6 +6,7 @@
 // - Bulk delete endpoint: /api/contacts/delete
 // - Immediate + Scheduled Telegram broadcasts (persistent across restarts)
 // - All links use string concatenation
+// - Per-broadcast setTimeout for precise scheduling (re-scheduled on restart)
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -46,6 +47,7 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const BROADCASTS_FILE = path.join(DATA_DIR, 'scheduled_broadcasts.json');
 let scheduledBroadcasts = new Map();
+const scheduledTimeouts = new Map(); // broadcastId → timeout ID
 
 function loadScheduledBroadcasts() {
   if (fs.existsSync(BROADCASTS_FILE)) {
@@ -53,6 +55,20 @@ function loadScheduledBroadcasts() {
       const data = JSON.parse(fs.readFileSync(BROADCASTS_FILE, 'utf8'));
       for (const entry of data) {
         scheduledBroadcasts.set(entry.broadcastId, entry);
+        // Re-schedule pending broadcasts
+        if (entry.status === 'pending') {
+          const delay = entry.scheduledTime - Date.now();
+          if (delay > 0) {
+            const timeoutId = setTimeout(() => {
+              executeScheduledBroadcast(entry.broadcastId);
+            }, delay);
+            scheduledTimeouts.set(entry.broadcastId, timeoutId);
+            console.log('Re-scheduled broadcast ' + entry.broadcastId + ' in ' + Math.round(delay / 1000) + ' seconds');
+          } else {
+            // Missed while server was down → execute immediately
+            executeScheduledBroadcast(entry.broadcastId);
+          }
+        }
       }
       console.log('Loaded ' + scheduledBroadcasts.size + ' scheduled broadcasts from disk');
     } catch (err) {
@@ -70,8 +86,91 @@ function saveScheduledBroadcasts() {
   }
 }
 
+function executeScheduledBroadcast(broadcastId) {
+  const task = scheduledBroadcasts.get(broadcastId);
+  if (!task || task.status !== 'pending') return;
+
+  console.log('Executing scheduled broadcast ' + broadcastId + ' for user ' + task.userId);
+
+  const result = executeBroadcast(task.userId, task.message);
+
+  if (result.error) {
+    task.status = 'failed';
+    task.error = result.error;
+  } else {
+    task.status = result.failed === 0 ? 'sent' : 'partial';
+    task.result = { sent: result.sent, failed: result.failed, total: result.total };
+  }
+  task.executedAt = new Date().toISOString();
+
+  scheduledBroadcasts.set(broadcastId, task);
+  scheduledTimeouts.delete(broadcastId);
+  saveScheduledBroadcasts();
+}
+
+function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
+  const broadcastId = uuidv4();
+  const scheduledMs = new Date(scheduledTime).getTime();
+  const entry = {
+    broadcastId,
+    userId,
+    message,
+    recipients,
+    scheduledTime: scheduledMs,
+    createdAt: Date.now(),
+    status: 'pending'
+  };
+
+  scheduledBroadcasts.set(broadcastId, entry);
+
+  const delay = scheduledMs - Date.now();
+  if (delay > 0) {
+    const timeoutId = setTimeout(() => {
+      executeScheduledBroadcast(broadcastId);
+    }, delay);
+    scheduledTimeouts.set(broadcastId, timeoutId);
+    console.log('Scheduled broadcast ' + broadcastId + ' in ' + Math.round(delay / 1000) + ' seconds');
+  } else {
+    executeScheduledBroadcast(broadcastId);
+  }
+
+  saveScheduledBroadcasts();
+  return broadcastId;
+}
+
+function executeBroadcast(userId, message) {
+  const bot = activeBots.get(userId);
+  if (!bot) return { sent: 0, failed: 0, error: 'Bot not connected' };
+
+  const mySubs = allSubmissions.get(userId) || [];
+  const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
+
+  let sent = 0, failed = 0;
+
+  for (const sub of targets) {
+    try {
+      bot.telegram.sendMessage(sub.telegramChatId, message, { parse_mode: 'HTML' });
+      sent++;
+    } catch (err) {
+      failed++;
+      console.error('Broadcast failed to ' + sub.telegramChatId + ':', err.message);
+    }
+  }
+
+  return { sent, failed, total: targets.length };
+}
+
 // Load on startup
 loadScheduledBroadcasts();
+
+// Cleanup timeouts on server shutdown (good practice)
+process.on('SIGTERM', () => {
+  for (const [id, timeout] of scheduledTimeouts.entries()) {
+    clearTimeout(timeout);
+  }
+  scheduledTimeouts.clear();
+  console.log('Cleared all scheduled timeouts on shutdown');
+});
 
 // ==================== TELEGRAM BOT & 2FA ====================
 function generate2FACode() {
@@ -204,73 +303,9 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
-// ==================== SCHEDULED BROADCASTS ====================
-function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
-  const broadcastId = uuidv4();
-  const entry = {
-    broadcastId,
-    userId,
-    message,
-    recipients,
-    scheduledTime: new Date(scheduledTime).getTime(),
-    createdAt: Date.now(),
-    status: 'pending'
-  };
-  scheduledBroadcasts.set(broadcastId, entry);
-  saveScheduledBroadcasts();
-  return broadcastId;
-}
-
-function executeBroadcast(userId, message) {
-  const bot = activeBots.get(userId);
-  if (!bot) return { sent: 0, failed: 0, error: 'Bot not connected' };
-
-  const mySubs = allSubmissions.get(userId) || [];
-  const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
-
-  let sent = 0, failed = 0;
-
-  for (const sub of targets) {
-    try {
-      bot.telegram.sendMessage(sub.telegramChatId, message, { parse_mode: 'HTML' });
-      sent++;
-    } catch (err) {
-      failed++;
-      console.error('Broadcast failed to ' + sub.telegramChatId + ':', err.message);
-    }
-  }
-
-  return { sent, failed, total: targets.length };
-}
-
-// Background scheduler — checks every 30 seconds
-setInterval(() => {
-  const now = Date.now();
-  let changed = false;
-
-  for (const [broadcastId, task] of scheduledBroadcasts.entries()) {
-    if (task.status === 'pending' && now >= task.scheduledTime) {
-      console.log('Executing scheduled broadcast ' + broadcastId + ' for user ' + task.userId);
-      const result = executeBroadcast(task.userId, task.message);
-
-      if (result.error) {
-        task.status = 'failed';
-        task.error = result.error;
-      } else {
-        task.status = result.failed === 0 ? 'sent' : 'partial';
-        task.result = { sent: result.sent, failed: result.failed, total: result.total };
-      }
-      task.executedAt = new Date().toISOString();
-      changed = true;
-    }
-  }
-
-  if (changed) saveScheduledBroadcasts();
-}, 30 * 1000);
-
 // ==================== JWT MIDDLEWARE ====================
 const authenticateToken = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1] || req.query.token;
+  const token = req.headers.authorization ? req.headers.authorization.split(' ')[1] : req.query.token;
   if (!token) return res.status(401).json({ error: 'Access token required' });
 
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
@@ -290,7 +325,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
   const hashed = await bcrypt.hash(password, 12);
   const newUser = {
     id: uuidv4(),
-    fullName,
+    fullName: fullName,
     email: email.toLowerCase(),
     password: hashed,
     createdAt: new Date().toISOString(),
@@ -306,7 +341,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
   res.status(201).json({
     success: true,
     token: token,
-    user: { id: newUser.id, fullName: fullName, email: newUser.email, isTelegramConnected: false }
+    user: { id: newUser.id, fullName: newUser.fullName, email: newUser.email, isTelegramConnected: false }
   });
 });
 
@@ -998,10 +1033,11 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — NO DUPLICATES + IMMEDIATE & PERSISTENT SCHEDULED BROADCASTS');
+  console.log('\nSENDEM SERVER — NO DUPLICATES + IMMEDIATE & TIMEOUT-BASED SCHEDULED BROADCASTS');
   console.log('http://localhost:' + PORT);
-  console.log('✓ Broadcasts now persistent across restarts');
-  console.log('✓ Immediate send: /api/broadcast/now or /api/broadcast/schedule with "now"');
+  console.log('✓ Broadcasts persistent across restarts');
+  console.log('✓ Immediate send: /api/broadcast/now');
+  console.log('✓ Scheduled: per-broadcast setTimeout (re-scheduled on restart)');
   console.log('✓ All links use string concatenation');
   console.log('✓ All routes complete and functional\n');
 });
