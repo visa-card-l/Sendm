@@ -1,10 +1,10 @@
 // server.js — UPDATED VERSION (December 19, 2025)
-// Changes:
-// - Landing page buttons now have proper vertical spacing (margin-bottom: 30px)
+// Features:
 // - Accepts email OR phone number (no validation)
-// - Same Telegram chat ID updates to latest name/contact
-// - NEW: Prevent duplicate contacts — same contact (email/phone) replaces the old entry
-// - NEW: Bulk delete endpoint for contacts (/api/contacts/delete)
+// - No duplicate contacts: same contact (email/phone) → replace/update
+// - No duplicate chat IDs: same telegramChatId → update with latest name/contact
+// - Bulk delete endpoint: /api/contacts/delete
+// - Landing page buttons have vertical spacing
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -86,23 +86,36 @@ function launchUserBot(user) {
     if (payload.startsWith('sub_') && pendingSubscribers.has(payload)) {
       const sub = pendingSubscribers.get(payload);
       if (sub.userId === user.id) {
-        const list = allSubmissions.get(user.id) || [];
+        let list = allSubmissions.get(user.id) || [];
 
-        // Check if this contact already exists (by contact field)
-        const existingIndex = list.findIndex(e => e.contact === sub.contact);
+        // Check for existing entry by chat ID
+        const existingByChatIdIndex = list.findIndex(e => e.telegramChatId === chatId);
 
-        if (existingIndex !== -1) {
-          // Update existing contact
-          list[existingIndex] = {
-            ...list[existingIndex],
+        // Check for existing entry by contact
+        const existingByContactIndex = list.findIndex(e => e.contact === sub.contact);
+
+        if (existingByChatIdIndex !== -1) {
+          // Same Telegram user (chat ID) → update with latest name/contact
+          list[existingByChatIdIndex] = {
+            ...list[existingByChatIdIndex],
             name: sub.name,
-            telegramChatId: chatId,
+            contact: sub.contact,
+            shortId: sub.shortId,
             subscribedAt: new Date().toISOString(),
             status: 'subscribed',
-            shortId: sub.shortId
+          };
+        } else if (existingByContactIndex !== -1) {
+          // Same contact but new chat ID → update
+          list[existingByContactIndex] = {
+            ...list[existingByContactIndex],
+            name: sub.name,
+            telegramChatId: chatId,
+            shortId: sub.shortId,
+            subscribedAt: new Date().toISOString(),
+            status: 'subscribed',
           };
         } else {
-          // Add new contact
+          // Brand new subscriber
           list.push({
             name: sub.name,
             contact: sub.contact,
@@ -522,7 +535,7 @@ app.get('/f/:shortId', (req, res) => {
 // ==================== SUBSCRIPTION & CONTACTS ====================
 app.post('/api/subscribe/:shortId', async (req, res) => {
   const { shortId } = req.params;
-  const { name, email } = req.body; // "email" field can contain phone number
+  const { name, email } = req.body; // "email" can be phone
 
   if (!name?.trim() || !email?.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
 
@@ -532,13 +545,13 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   const owner = users.find(u => u.id === page.userId);
   if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Broadcast bot not connected' });
 
-  const contactValue = email.trim(); // this is email or phone
+  const contactValue = email.trim();
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
-  const list = allSubmissions.get(owner.id) || [];
+  let list = allSubmissions.get(owner.id) || [];
 
-  // Check for existing contact with same contact value
-  const existingIndex = list.findIndex(c => c.contact === contactValue);
+  // Check for existing contact
+  const existingByContactIndex = list.findIndex(c => c.contact === contactValue);
 
   const newEntry = {
     name: name.trim(),
@@ -550,12 +563,14 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
     status: 'pending'
   };
 
-  if (existingIndex !== -1) {
-    // Replace existing entry (keep old telegramChatId if already subscribed)
-    newEntry.telegramChatId = list[existingIndex].telegramChatId;
-    newEntry.subscribedAt = list[existingIndex].subscribedAt;
-    newEntry.status = list[existingIndex].status;
-    list[existingIndex] = newEntry;
+  if (existingByContactIndex !== -1) {
+    // Update existing contact (keep chatId if subscribed)
+    list[existingByContactIndex] = {
+      ...list[existingByContactIndex],
+      name: newEntry.name,
+      contact: newEntry.contact,
+      submittedAt: newEntry.submittedAt,
+    };
   } else {
     list.push(newEntry);
   }
@@ -602,9 +617,8 @@ app.get('/api/contacts', authenticateToken, (req, res) => {
   res.json({ success: true, contacts, stats });
 });
 
-// NEW: Bulk delete contacts
 app.post('/api/contacts/delete', authenticateToken, (req, res) => {
-  const { contacts } = req.body; // array of contact strings (email/phone values)
+  const { contacts } = req.body; // array of contact strings
   if (!Array.isArray(contacts) || contacts.length === 0) {
     return res.status(400).json({ error: 'Provide an array of contact values to delete' });
   }
@@ -821,9 +835,10 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log(`\nSENDEM SERVER — WITH BULK DELETE & NO DUPLICATE CONTACTS`);
+  console.log(`\nSENDEM SERVER — NO DUPLICATES (CONTACTS & CHAT IDs)`);
   console.log(`http://localhost:${PORT}`);
-  console.log(`✓ Duplicate contacts are now replaced`);
-  console.log(`✓ Added /api/contacts/delete (POST) for bulk deletion`);
-  console.log(`✓ All previous features intact\n`);
+  console.log(`✓ Contacts updated/replaced on duplicate contact value`);
+  console.log(`✓ Existing chat ID updated with latest name/contact`);
+  console.log(`✓ Bulk delete: /api/contacts/delete`);
+  console.log(`✓ All features intact\n`);
 });
