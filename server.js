@@ -5,7 +5,7 @@
 // - No duplicate chat IDs: same telegramChatId → update with latest name/contact
 // - Bulk delete endpoint: /api/contacts/delete
 // - Immediate + Scheduled Telegram broadcasts (persistent across restarts)
-// - Landing page buttons have vertical spacing
+// - All links use string concatenation
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -54,7 +54,7 @@ function loadScheduledBroadcasts() {
       for (const entry of data) {
         scheduledBroadcasts.set(entry.broadcastId, entry);
       }
-      console.log(`Loaded ${scheduledBroadcasts.size} scheduled broadcasts from disk`);
+      console.log('Loaded ' + scheduledBroadcasts.size + ' scheduled broadcasts from disk');
     } catch (err) {
       console.error('Failed to load scheduled broadcasts:', err.message);
     }
@@ -93,7 +93,7 @@ Valid for 10 minutes.
     `.trim(), { parse_mode: 'HTML' });
     return true;
   } catch (err) {
-    console.error(`Failed to send code to ${user.email}:`, err.message);
+    console.error('Failed to send code to ' + user.email + ':', err.message);
     return false;
   }
 }
@@ -192,7 +192,7 @@ Status: <b>${user.isTelegramConnected ? 'Connected' : 'Not Connected'}</b>
     `);
   });
 
-  bot.catch((err) => console.error(`Bot error [${user.email}]:`, err));
+  bot.catch((err) => console.error('Bot error [' + user.email + ']:', err));
   bot.launch();
   activeBots.set(user.id, bot);
 }
@@ -236,7 +236,7 @@ function executeBroadcast(userId, message) {
       sent++;
     } catch (err) {
       failed++;
-      console.error(`Broadcast failed to ${sub.telegramChatId}:`, err.message);
+      console.error('Broadcast failed to ' + sub.telegramChatId + ':', err.message);
     }
   }
 
@@ -250,7 +250,7 @@ setInterval(() => {
 
   for (const [broadcastId, task] of scheduledBroadcasts.entries()) {
     if (task.status === 'pending' && now >= task.scheduledTime) {
-      console.log(`Executing scheduled broadcast \( {broadcastId} for user \){task.userId}`);
+      console.log('Executing scheduled broadcast ' + broadcastId + ' for user ' + task.userId);
       const result = executeBroadcast(task.userId, task.message);
 
       if (result.error) {
@@ -305,8 +305,8 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
 
   res.status(201).json({
     success: true,
-    token,
-    user: { id: newUser.id, fullName, email: newUser.email, isTelegramConnected: false }
+    token: token,
+    user: { id: newUser.id, fullName: fullName, email: newUser.email, isTelegramConnected: false }
   });
 });
 
@@ -319,7 +319,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
   res.json({
     success: true,
-    token,
+    token: token,
     user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected }
   });
 });
@@ -332,19 +332,22 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
 
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   const { botToken } = req.body;
-  if (!botToken?.trim()) return res.status(400).json({ error: 'Bot token required' });
+  if (!botToken || !botToken.trim()) return res.status(400).json({ error: 'Bot token required' });
 
   const token = botToken.trim();
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   try {
-    if (activeBots.has(user.id)) activeBots.get(user.id).stop(), activeBots.delete(user.id);
+    if (activeBots.has(user.id)) {
+      activeBots.get(user.id).stop();
+      activeBots.delete(user.id);
+    }
 
-    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
     const data = await response.json();
 
-    if (!data.ok || !data.result?.username) return res.status(400).json({ error: 'Invalid bot token' });
+    if (!data.ok || !data.result || !data.result.username) return res.status(400).json({ error: 'Invalid bot token' });
 
     const botUsername = data.result.username.replace(/^@/, '');
     user.telegramBotToken = token;
@@ -353,9 +356,9 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
     user.telegramChatId = null;
     launchUserBot(user);
 
-    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
+    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
 
-    res.json({ success: true, message: 'Bot connected!', botUsername: `@${botUsername}`, startLink });
+    res.json({ success: true, message: 'Bot connected!', botUsername: '@' + botUsername, startLink: startLink });
   } catch (err) {
     res.status(500).json({ error: 'Failed to connect to Telegram' });
   }
@@ -363,19 +366,22 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
 app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   const { newBotToken } = req.body;
-  if (!newBotToken?.trim()) return res.status(400).json({ error: 'New bot token required' });
+  if (!newBotToken || !newBotToken.trim()) return res.status(400).json({ error: 'New bot token required' });
 
   const token = newBotToken.trim();
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   try {
-    if (activeBots.has(user.id)) activeBots.get(user.id).stop(), activeBots.delete(user.id);
+    if (activeBots.has(user.id)) {
+      activeBots.get(user.id).stop();
+      activeBots.delete(user.id);
+    }
 
-    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
     const data = await response.json();
 
-    if (!data.ok || !data.result?.username) return res.status(400).json({ error: 'Invalid bot token' });
+    if (!data.ok || !data.result || !data.result.username) return res.status(400).json({ error: 'Invalid bot token' });
 
     const botUsername = data.result.username.replace(/^@/, '');
     user.telegramBotToken = token;
@@ -384,9 +390,9 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
     user.telegramChatId = null;
     launchUserBot(user);
 
-    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
+    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
 
-    res.json({ success: true, message: 'Bot token updated!', botUsername: `@${botUsername}`, startLink });
+    res.json({ success: true, message: 'Bot token updated!', botUsername: '@' + botUsername, startLink: startLink });
   } catch (err) {
     res.status(500).json({ error: 'Failed to validate token' });
   }
@@ -396,7 +402,10 @@ app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  if (activeBots.has(user.id)) activeBots.get(user.id).stop(), activeBots.delete(user.id);
+  if (activeBots.has(user.id)) {
+    activeBots.get(user.id).stop();
+    activeBots.delete(user.id);
+  }
 
   user.telegramBotToken = null;
   user.botUsername = null;
@@ -425,11 +434,11 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   const resetToken = uuidv4();
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
-  resetTokens.set(resetToken, { userId: user.id, code, expiresAt });
+  resetTokens.set(resetToken, { userId: user.id, code: code, expiresAt: expiresAt });
   const sent = await send2FACodeViaBot(user, code);
   if (!sent) return res.status(500).json({ error: 'Failed to send code' });
 
-  res.json({ success: true, message: 'Code sent!', resetToken });
+  res.json({ success: true, message: 'Code sent!', resetToken: resetToken });
 });
 
 app.post('/api/auth/verify-reset-code', (req, res) => {
@@ -471,11 +480,11 @@ app.get('/api/pages', authenticateToken, (req, res) => {
   const userPages = Array.from(landingPages.entries())
     .filter(([_, page]) => page.userId === req.user.userId)
     .map(([shortId, page]) => ({
-      shortId,
+      shortId: shortId,
       title: page.title,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
-      url: `\( {req.protocol}:// \){req.get('host')}/p/${shortId}`
+      url: req.protocol + '://' + req.get('host') + '/p/' + shortId
     }));
   res.json({ pages: userPages });
 });
@@ -494,24 +503,24 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
       if (block.type === 'text') {
         const content = (block.content || '').trim();
         if (!content || content === 'New text' || content.length < 1) return null;
-        return { type: 'text', tag: block.tag || 'p', content };
+        return { type: 'text', tag: block.tag || 'p', content: content };
       }
 
       if (block.type === 'image') {
-        const src = block.src?.trim();
+        const src = block.src ? block.src.trim() : '';
         if (!src || (src.startsWith('data:image/') && src.length < 100)) return null;
-        return { type: 'image', src };
+        return { type: 'image', src: src };
       }
 
       if (block.type === 'button') {
         const text = (block.text || '').trim();
         const lowerText = text.toLowerCase();
         if (!text || text.length < 3 || lowerText === 'x' || lowerText.includes('add ') || lowerText.includes('delete') || lowerText.includes('remove') || lowerText.includes('close')) return null;
-        return { type: 'button', text, href: block.href === '#' ? '' : (block.href || '') };
+        return { type: 'button', text: text, href: block.href === '#' ? '' : (block.href || '') };
       }
 
       if (block.type === 'form') {
-        const html = block.html?.trim();
+        const html = block.html ? block.html.trim() : '';
         if (!html || html.length < 10) return null;
         return { type: 'form', html: html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '') };
       }
@@ -526,14 +535,14 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
     userId: req.user.userId,
     title: title.trim(),
     config: { blocks: cleanBlocks },
-    createdAt: landingPages.get(finalShortId)?.createdAt || now,
+    createdAt: landingPages.get(finalShortId) ? landingPages.get(finalShortId).createdAt : now,
     updatedAt: now
   });
 
   res.json({
     success: true,
     shortId: finalShortId,
-    url: `\( {req.protocol}:// \){req.get('host')}/p/${finalShortId}`
+    url: req.protocol + '://' + req.get('host') + '/p/' + finalShortId
   });
 });
 
@@ -555,11 +564,11 @@ app.get('/api/forms', authenticateToken, (req, res) => {
   const userForms = Array.from(formPages.entries())
     .filter(([_, form]) => form.userId === req.user.userId)
     .map(([shortId, formData]) => ({
-      shortId,
+      shortId: shortId,
       title: formData.title,
       createdAt: formData.createdAt,
       updatedAt: formData.updatedAt,
-      url: `\( {req.protocol}:// \){req.get('host')}/f/${shortId}`
+      url: req.protocol + '://' + req.get('host') + '/f/' + shortId
     }));
   res.json({ forms: userForms });
 });
@@ -592,14 +601,14 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
     userId: req.user.userId,
     title: title.trim(),
     state: sanitizedState,
-    createdAt: formPages.get(finalShortId)?.createdAt || now,
+    createdAt: formPages.get(finalShortId) ? formPages.get(finalShortId).createdAt : now,
     updatedAt: now
   });
 
   res.json({
     success: true,
     shortId: finalShortId,
-    url: `\( {req.protocol}:// \){req.get('host')}/f/${finalShortId}`
+    url: req.protocol + '://' + req.get('host') + '/f/' + finalShortId
   });
 });
 
@@ -622,7 +631,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   const { shortId } = req.params;
   const { name, email } = req.body;
 
-  if (!name?.trim() || !email?.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
+  if (!name || !name.trim() || !email || !email.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
 
   const page = formPages.get(shortId);
   if (!page) return res.status(404).json({ error: 'Page not found' });
@@ -631,7 +640,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Broadcast bot not connected' });
 
   const contactValue = email.trim();
-  const payload = `sub_\( {shortId}_ \){uuidv4().slice(0, 12)}`;
+  const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
   let list = allSubmissions.get(owner.id) || [];
 
@@ -641,7 +650,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
     name: name.trim(),
     contact: contactValue,
     telegramChatId: null,
-    shortId,
+    shortId: shortId,
     submittedAt: new Date().toISOString(),
     subscribedAt: null,
     status: 'pending'
@@ -662,14 +671,14 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
 
   pendingSubscribers.set(payload, {
     userId: owner.id,
-    shortId,
+    shortId: shortId,
     name: name.trim(),
     contact: contactValue,
     createdAt: Date.now()
   });
 
-  const deepLink = `https://t.me/\( {owner.botUsername}?start= \){payload}`;
-  res.json({ success: true, deepLink });
+  const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
+  res.json({ success: true, deepLink: deepLink });
 });
 
 app.get('/api/contacts', authenticateToken, (req, res) => {
@@ -685,7 +694,7 @@ app.get('/api/contacts', authenticateToken, (req, res) => {
     statusLabel: c.status === 'subscribed' ? 'Subscribed ✅' : 'Pending ⏳',
     telegramChatId: c.telegramChatId || null,
     pageId: c.shortId,
-    pageUrl: `\( {req.protocol}:// \){req.get('host')}/f/${c.shortId}`,
+    pageUrl: req.protocol + '://' + req.get('host') + '/f/' + c.shortId,
     submittedAt: new Date(c.submittedAt).toLocaleString(),
     subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
   }));
@@ -697,7 +706,7 @@ app.get('/api/contacts', authenticateToken, (req, res) => {
     subscribedPercentage: allContacts.length > 0 ? Math.round((allContacts.filter(c => c.status === 'subscribed').length / allContacts.length) * 100) : 0
   };
 
-  res.json({ success: true, contacts, stats });
+  res.json({ success: true, contacts: contacts, stats: stats });
 });
 
 app.post('/api/contacts/delete', authenticateToken, (req, res) => {
@@ -718,7 +727,7 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
 
   res.json({
     success: true,
-    deletedCount,
+    deletedCount: deletedCount,
     remaining: list.length
   });
 });
@@ -726,7 +735,7 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message, recipients = 'all' } = req.body;
 
-  if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
+  if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
   const userId = req.user.userId;
   const bot = activeBots.get(userId);
@@ -743,17 +752,17 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
       sent++;
     } catch (err) {
       failed++;
-      console.error(`Broadcast failed to ${sub.telegramChatId}:`, err.message);
+      console.error('Broadcast failed to ' + sub.telegramChatId + ':', err.message);
     }
   }
 
-  res.json({ success: true, sent, failed, total: targets.length });
+  res.json({ success: true, sent: sent, failed: failed, total: targets.length });
 });
 
 app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
 
-  if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
+  if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
   const userId = req.user.userId;
 
@@ -776,7 +785,7 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
       }
     }
 
-    return res.json({ success: true, sent, failed, total: targets.length, immediate: true });
+    return res.json({ success: true, sent: sent, failed: failed, total: targets.length, immediate: true });
   }
 
   // Scheduled broadcast
@@ -794,9 +803,9 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
   res.json({
     success: true,
     message: 'Broadcast scheduled!',
-    broadcastId,
+    broadcastId: broadcastId,
     scheduledTime: scheduled.toISOString(),
-    recipients
+    recipients: recipients
   });
 });
 
@@ -815,7 +824,7 @@ app.get('/api/broadcast/scheduled', authenticateToken, (req, res) => {
     }))
     .sort((a, b) => new Date(b.scheduledTime) - new Date(a.scheduledTime));
 
-  res.json({ success: true, scheduled });
+  res.json({ success: true, scheduled: scheduled });
 });
 
 // ==================== VIEWS ====================
@@ -989,10 +998,10 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log(`\nSENDEM SERVER — NO DUPLICATES + IMMEDIATE & PERSISTENT SCHEDULED BROADCASTS`);
-  console.log(`http://localhost:${PORT}`);
-  console.log(`✓ Broadcasts now persistent across restarts`);
-  console.log(`✓ Immediate send: /api/broadcast/now or /api/broadcast/schedule with "now"`);
-  console.log(`✓ Scheduled broadcasts resume on server restart`);
-  console.log(`✓ All routes complete and functional\n`);
+  console.log('\nSENDEM SERVER — NO DUPLICATES + IMMEDIATE & PERSISTENT SCHEDULED BROADCASTS');
+  console.log('http://localhost:' + PORT);
+  console.log('✓ Broadcasts now persistent across restarts');
+  console.log('✓ Immediate send: /api/broadcast/now or /api/broadcast/schedule with "now"');
+  console.log('✓ All links use string concatenation');
+  console.log('✓ All routes complete and functional\n');
 });
