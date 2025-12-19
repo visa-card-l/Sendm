@@ -1,4 +1,4 @@
-// server.js — UPDATED VERSION (December 19, 2025)
+// server.js — FIXED VERSION (December 19, 2025)
 // Features:
 // - Accepts email OR phone number (no validation)
 // - No duplicate contacts: same contact (email/phone) → replace/update
@@ -7,6 +7,7 @@
 // - Immediate + Scheduled Telegram broadcasts (persistent across restarts)
 // - All links use string concatenation
 // - Per-broadcast setTimeout for precise scheduling (re-scheduled on restart)
+// - FIXED: Scheduled broadcasts now always use the CURRENT active bot instance
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -90,13 +91,14 @@ function executeScheduledBroadcast(broadcastId) {
   const task = scheduledBroadcasts.get(broadcastId);
   if (!task || task.status !== 'pending') return;
 
-  console.log('Executing scheduled broadcast ' + broadcastId + ' for user ' + task.userId);
+  console.log(`[SCHEDULED] Executing broadcast \( {broadcastId} for user \){task.userId} at ${new Date().toISOString()}`);
 
   const result = executeBroadcast(task.userId, task.message);
 
   if (result.error) {
     task.status = 'failed';
     task.error = result.error;
+    console.error(`[SCHEDULED] Broadcast \( {broadcastId} failed: \){result.error}`);
   } else {
     task.status = result.failed === 0 ? 'sent' : 'partial';
     task.result = { sent: result.sent, failed: result.failed, total: result.total };
@@ -139,8 +141,12 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
 }
 
 function executeBroadcast(userId, message) {
+  // ALWAYS fetch the CURRENT active bot instance at execution time
   const bot = activeBots.get(userId);
-  if (!bot) return { sent: 0, failed: 0, error: 'Bot not connected' };
+  if (!bot || !bot.telegram) {
+    console.error(`[BROADCAST] Bot not active for user ${userId}`);
+    return { sent: 0, failed: 0, error: 'Bot not connected at execution time' };
+  }
 
   const mySubs = allSubmissions.get(userId) || [];
   const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
@@ -153,17 +159,26 @@ function executeBroadcast(userId, message) {
       sent++;
     } catch (err) {
       failed++;
-      console.error('Broadcast failed to ' + sub.telegramChatId + ':', err.message);
+      console.error(`Broadcast failed to ${sub.telegramChatId}:`, err.message);
     }
   }
 
+  console.log(`[BROADCAST] User \( {userId} - Sent: \){sent}, Failed: \( {failed}, Total: \){targets.length}`);
   return { sent, failed, total: targets.length };
 }
 
 // Load on startup
 loadScheduledBroadcasts();
 
-// Cleanup timeouts on server shutdown (good practice)
+// Auto-relaunch all bots that have a token (critical for scheduled broadcasts after restart)
+users.forEach(user => {
+  if (user.telegramBotToken) {
+    console.log(`[STARTUP] Auto-relaunching bot for user ${user.email}`);
+    launchUserBot(user);
+  }
+});
+
+// Cleanup timeouts on server shutdown
 process.on('SIGTERM', () => {
   for (const [id, timeout] of scheduledTimeouts.entries()) {
     clearTimeout(timeout);
@@ -294,6 +309,7 @@ Status: <b>${user.isTelegramConnected ? 'Connected' : 'Not Connected'}</b>
   bot.catch((err) => console.error('Bot error [' + user.email + ']:', err));
   bot.launch();
   activeBots.set(user.id, bot);
+  console.log(`[BOT] Launched bot for user ${user.email}`);
 }
 
 setInterval(() => {
@@ -773,25 +789,9 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
   const userId = req.user.userId;
-  const bot = activeBots.get(userId);
-  if (!bot) return res.status(400).json({ error: 'Bot not connected' });
+  const result = executeBroadcast(userId, message);
 
-  const mySubs = allSubmissions.get(userId) || [];
-  const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
-
-  let sent = 0, failed = 0;
-
-  for (const sub of targets) {
-    try {
-      await bot.telegram.sendMessage(sub.telegramChatId, message, { parse_mode: 'HTML' });
-      sent++;
-    } catch (err) {
-      failed++;
-      console.error('Broadcast failed to ' + sub.telegramChatId + ':', err.message);
-    }
-  }
-
-  res.json({ success: true, sent: sent, failed: failed, total: targets.length });
+  res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total });
 });
 
 app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
@@ -803,24 +803,8 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
 
   // Immediate send if "now" is specified
   if (scheduledTime === 'now') {
-    const bot = activeBots.get(userId);
-    if (!bot) return res.status(400).json({ error: 'Bot not connected' });
-
-    const mySubs = allSubmissions.get(userId) || [];
-    const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
-
-    let sent = 0, failed = 0;
-
-    for (const sub of targets) {
-      try {
-        bot.telegram.sendMessage(sub.telegramChatId, message, { parse_mode: 'HTML' });
-        sent++;
-      } catch (err) {
-        failed++;
-      }
-    }
-
-    return res.json({ success: true, sent: sent, failed: failed, total: targets.length, immediate: true });
+    const result = executeBroadcast(userId, message);
+    return res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total, immediate: true });
   }
 
   // Scheduled broadcast
@@ -1033,11 +1017,10 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — NO DUPLICATES + IMMEDIATE & TIMEOUT-BASED SCHEDULED BROADCASTS');
+  console.log('\nSENDEM SERVER — FIXED SCHEDULER VERSION');
   console.log('http://localhost:' + PORT);
   console.log('✓ Broadcasts persistent across restarts');
-  console.log('✓ Immediate send: /api/broadcast/now');
-  console.log('✓ Scheduled: per-broadcast setTimeout (re-scheduled on restart)');
-  console.log('✓ All links use string concatenation');
+  ✓ Immediate send: /api/broadcast/now');
+  ✓ Scheduled: always uses current bot instance');
   console.log('✓ All routes complete and functional\n');
 });
