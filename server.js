@@ -4,7 +4,7 @@
 // - No duplicate contacts: same contact (email/phone) → replace/update
 // - No duplicate chat IDs: same telegramChatId → update with latest name/contact
 // - Bulk delete endpoint: /api/contacts/delete
-// - Scheduled Telegram broadcasts
+// - Immediate + Scheduled Telegram broadcasts (persistent across restarts)
 // - Landing page buttons have vertical spacing
 
 const express = require('express');
@@ -40,13 +40,38 @@ const formPages = new Map();
 const allSubmissions = new Map(); // userId → array of contact objects
 const pendingSubscribers = new Map();
 
-// Scheduled broadcasts storage
-const scheduledBroadcasts = new Map(); // broadcastId → task object
+// Scheduled broadcasts storage + persistence
+const DATA_DIR = path.join(__dirname, 'data');
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-function escapeHtml(text) {
-  const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-  return text.replace(/[&<>"']/g, m => map[m]);
+const BROADCASTS_FILE = path.join(DATA_DIR, 'scheduled_broadcasts.json');
+let scheduledBroadcasts = new Map();
+
+function loadScheduledBroadcasts() {
+  if (fs.existsSync(BROADCASTS_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(BROADCASTS_FILE, 'utf8'));
+      for (const entry of data) {
+        scheduledBroadcasts.set(entry.broadcastId, entry);
+      }
+      console.log(`Loaded ${scheduledBroadcasts.size} scheduled broadcasts from disk`);
+    } catch (err) {
+      console.error('Failed to load scheduled broadcasts:', err.message);
+    }
+  }
 }
+
+function saveScheduledBroadcasts() {
+  try {
+    const data = Array.from(scheduledBroadcasts.values());
+    fs.writeFileSync(BROADCASTS_FILE, JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.error('Failed to save scheduled broadcasts:', err.message);
+  }
+}
+
+// Load on startup
+loadScheduledBroadcasts();
 
 // ==================== TELEGRAM BOT & 2FA ====================
 function generate2FACode() {
@@ -94,7 +119,6 @@ function launchUserBot(user) {
         const existingByContactIndex = list.findIndex(e => e.contact === sub.contact);
 
         if (existingByChatIdIndex !== -1) {
-          // Update existing by chat ID
           list[existingByChatIdIndex] = {
             ...list[existingByChatIdIndex],
             name: sub.name,
@@ -104,7 +128,6 @@ function launchUserBot(user) {
             status: 'subscribed',
           };
         } else if (existingByContactIndex !== -1) {
-          // Update existing by contact
           list[existingByContactIndex] = {
             ...list[existingByContactIndex],
             name: sub.name,
@@ -114,7 +137,6 @@ function launchUserBot(user) {
             status: 'subscribed',
           };
         } else {
-          // New subscriber
           list.push({
             name: sub.name,
             contact: sub.contact,
@@ -195,6 +217,7 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
     status: 'pending'
   };
   scheduledBroadcasts.set(broadcastId, entry);
+  saveScheduledBroadcasts();
   return broadcastId;
 }
 
@@ -220,9 +243,11 @@ function executeBroadcast(userId, message) {
   return { sent, failed, total: targets.length };
 }
 
-// Background scheduler — checks every minute
+// Background scheduler — checks every 30 seconds
 setInterval(() => {
   const now = Date.now();
+  let changed = false;
+
   for (const [broadcastId, task] of scheduledBroadcasts.entries()) {
     if (task.status === 'pending' && now >= task.scheduledTime) {
       console.log(`Executing scheduled broadcast \( {broadcastId} for user \){task.userId}`);
@@ -236,9 +261,12 @@ setInterval(() => {
         task.result = { sent: result.sent, failed: result.failed, total: result.total };
       }
       task.executedAt = new Date().toISOString();
+      changed = true;
     }
   }
-}, 60 * 1000);
+
+  if (changed) saveScheduledBroadcasts();
+}, 30 * 1000);
 
 // ==================== JWT MIDDLEWARE ====================
 const authenticateToken = (req, res, next) => {
@@ -313,7 +341,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   try {
     if (activeBots.has(user.id)) activeBots.get(user.id).stop(), activeBots.delete(user.id);
 
-    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
     const data = await response.json();
 
     if (!data.ok || !data.result?.username) return res.status(400).json({ error: 'Invalid bot token' });
@@ -325,9 +353,9 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
     user.telegramChatId = null;
     launchUserBot(user);
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
+    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
-    res.json({ success: true, message: 'Bot connected!', botUsername: '@' + botUsername, startLink });
+    res.json({ success: true, message: 'Bot connected!', botUsername: `@${botUsername}`, startLink });
   } catch (err) {
     res.status(500).json({ error: 'Failed to connect to Telegram' });
   }
@@ -344,7 +372,7 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   try {
     if (activeBots.has(user.id)) activeBots.get(user.id).stop(), activeBots.delete(user.id);
 
-    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
     const data = await response.json();
 
     if (!data.ok || !data.result?.username) return res.status(400).json({ error: 'Invalid bot token' });
@@ -356,9 +384,9 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
     user.telegramChatId = null;
     launchUserBot(user);
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
+    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
-    res.json({ success: true, message: 'Bot token updated!', botUsername: '@' + botUsername, startLink });
+    res.json({ success: true, message: 'Bot token updated!', botUsername: `@${botUsername}`, startLink });
   } catch (err) {
     res.status(500).json({ error: 'Failed to validate token' });
   }
@@ -447,7 +475,7 @@ app.get('/api/pages', authenticateToken, (req, res) => {
       title: page.title,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
-      url: req.protocol + '://' + req.get('host') + '/p/' + shortId
+      url: `\( {req.protocol}:// \){req.get('host')}/p/${shortId}`
     }));
   res.json({ pages: userPages });
 });
@@ -505,7 +533,7 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
   res.json({
     success: true,
     shortId: finalShortId,
-    url: req.protocol + '://' + req.get('host') + '/p/' + finalShortId
+    url: `\( {req.protocol}:// \){req.get('host')}/p/${finalShortId}`
   });
 });
 
@@ -531,7 +559,7 @@ app.get('/api/forms', authenticateToken, (req, res) => {
       title: formData.title,
       createdAt: formData.createdAt,
       updatedAt: formData.updatedAt,
-      url: req.protocol + '://' + req.get('host') + '/f/' + shortId
+      url: `\( {req.protocol}:// \){req.get('host')}/f/${shortId}`
     }));
   res.json({ forms: userForms });
 });
@@ -571,7 +599,7 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
   res.json({
     success: true,
     shortId: finalShortId,
-    url: req.protocol + '://' + req.get('host') + '/f/' + finalShortId
+    url: `\( {req.protocol}:// \){req.get('host')}/f/${finalShortId}`
   });
 });
 
@@ -603,7 +631,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Broadcast bot not connected' });
 
   const contactValue = email.trim();
-  const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
+  const payload = `sub_\( {shortId}_ \){uuidv4().slice(0, 12)}`;
 
   let list = allSubmissions.get(owner.id) || [];
 
@@ -640,7 +668,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
     createdAt: Date.now()
   });
 
-  const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
+  const deepLink = `https://t.me/\( {owner.botUsername}?start= \){payload}`;
   res.json({ success: true, deepLink });
 });
 
@@ -657,7 +685,7 @@ app.get('/api/contacts', authenticateToken, (req, res) => {
     statusLabel: c.status === 'subscribed' ? 'Subscribed ✅' : 'Pending ⏳',
     telegramChatId: c.telegramChatId || null,
     pageId: c.shortId,
-    pageUrl: req.protocol + '://' + req.get('host') + '/f/' + c.shortId,
+    pageUrl: `\( {req.protocol}:// \){req.get('host')}/f/${c.shortId}`,
     submittedAt: new Date(c.submittedAt).toLocaleString(),
     subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
   }));
@@ -695,14 +723,16 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   });
 });
 
-app.post('/api/broadcast', authenticateToken, async (req, res) => {
-  const { message } = req.body;
+app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
+  const { message, recipients = 'all' } = req.body;
+
   if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
 
-  const bot = activeBots.get(req.user.userId);
+  const userId = req.user.userId;
+  const bot = activeBots.get(userId);
   if (!bot) return res.status(400).json({ error: 'Bot not connected' });
 
-  const mySubs = allSubmissions.get(req.user.userId) || [];
+  const mySubs = allSubmissions.get(userId) || [];
   const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
 
   let sent = 0, failed = 0;
@@ -713,19 +743,45 @@ app.post('/api/broadcast', authenticateToken, async (req, res) => {
       sent++;
     } catch (err) {
       failed++;
+      console.error(`Broadcast failed to ${sub.telegramChatId}:`, err.message);
     }
   }
 
   res.json({ success: true, sent, failed, total: targets.length });
 });
 
-// ==================== SCHEDULED BROADCAST ENDPOINTS ====================
 app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
 
   if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
+
+  const userId = req.user.userId;
+
+  // Immediate send if "now" is specified
+  if (scheduledTime === 'now') {
+    const bot = activeBots.get(userId);
+    if (!bot) return res.status(400).json({ error: 'Bot not connected' });
+
+    const mySubs = allSubmissions.get(userId) || [];
+    const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
+
+    let sent = 0, failed = 0;
+
+    for (const sub of targets) {
+      try {
+        bot.telegram.sendMessage(sub.telegramChatId, message, { parse_mode: 'HTML' });
+        sent++;
+      } catch (err) {
+        failed++;
+      }
+    }
+
+    return res.json({ success: true, sent, failed, total: targets.length, immediate: true });
+  }
+
+  // Scheduled broadcast
   if (!scheduledTime || isNaN(new Date(scheduledTime).getTime())) {
-    return res.status(400).json({ error: 'Valid future datetime required' });
+    return res.status(400).json({ error: 'Valid future datetime or "now" required' });
   }
 
   const scheduled = new Date(scheduledTime);
@@ -733,7 +789,6 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Schedule time must be in the future' });
   }
 
-  const userId = req.user.userId;
   const broadcastId = scheduleBroadcast(userId, message, recipients, scheduledTime);
 
   res.json({
@@ -934,12 +989,10 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log(`\nSENDEM SERVER — NO DUPLICATES (CONTACTS & CHAT IDs) + SCHEDULED BROADCASTS`);
+  console.log(`\nSENDEM SERVER — NO DUPLICATES + IMMEDIATE & PERSISTENT SCHEDULED BROADCASTS`);
   console.log(`http://localhost:${PORT}`);
-  console.log(`✓ Contacts updated/replaced on duplicate contact value`);
-  console.log(`✓ Existing chat ID updated with latest name/contact`);
-  console.log(`✓ Bulk delete: /api/contacts/delete`);
-  console.log(`✓ Scheduled broadcasts: /api/broadcast/schedule`);
-  console.log(`✓ View scheduled: /api/broadcast/scheduled`);
-  console.log(`✓ All features intact\n`);
+  console.log(`✓ Broadcasts now persistent across restarts`);
+  console.log(`✓ Immediate send: /api/broadcast/now or /api/broadcast/schedule with "now"`);
+  console.log(`✓ Scheduled broadcasts resume on server restart`);
+  console.log(`✓ All routes complete and functional\n`);
 });
