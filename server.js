@@ -4,6 +4,7 @@
 // - No duplicate contacts: same contact (email/phone) → replace/update
 // - No duplicate chat IDs: same telegramChatId → update with latest name/contact
 // - Bulk delete endpoint: /api/contacts/delete
+// - Scheduled Telegram broadcasts
 // - Landing page buttons have vertical spacing
 
 const express = require('express');
@@ -36,10 +37,11 @@ const activeBots = new Map();
 const resetTokens = new Map();
 const landingPages = new Map();
 const formPages = new Map();
-
-// Subscription system
-const pendingSubscribers = new Map();
 const allSubmissions = new Map(); // userId → array of contact objects
+const pendingSubscribers = new Map();
+
+// Scheduled broadcasts storage
+const scheduledBroadcasts = new Map(); // broadcastId → task object
 
 function escapeHtml(text) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
@@ -88,14 +90,11 @@ function launchUserBot(user) {
       if (sub.userId === user.id) {
         let list = allSubmissions.get(user.id) || [];
 
-        // Check for existing entry by chat ID
         const existingByChatIdIndex = list.findIndex(e => e.telegramChatId === chatId);
-
-        // Check for existing entry by contact
         const existingByContactIndex = list.findIndex(e => e.contact === sub.contact);
 
         if (existingByChatIdIndex !== -1) {
-          // Same Telegram user (chat ID) → update with latest name/contact
+          // Update existing by chat ID
           list[existingByChatIdIndex] = {
             ...list[existingByChatIdIndex],
             name: sub.name,
@@ -105,7 +104,7 @@ function launchUserBot(user) {
             status: 'subscribed',
           };
         } else if (existingByContactIndex !== -1) {
-          // Same contact but new chat ID → update
+          // Update existing by contact
           list[existingByContactIndex] = {
             ...list[existingByContactIndex],
             name: sub.name,
@@ -115,7 +114,7 @@ function launchUserBot(user) {
             status: 'subscribed',
           };
         } else {
-          // Brand new subscriber
+          // New subscriber
           list.push({
             name: sub.name,
             contact: sub.contact,
@@ -182,6 +181,64 @@ setInterval(() => {
     if (now - d.createdAt > 30 * 60 * 1000) pendingSubscribers.delete(p);
   }
 }, 60 * 60 * 1000);
+
+// ==================== SCHEDULED BROADCASTS ====================
+function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
+  const broadcastId = uuidv4();
+  const entry = {
+    broadcastId,
+    userId,
+    message,
+    recipients,
+    scheduledTime: new Date(scheduledTime).getTime(),
+    createdAt: Date.now(),
+    status: 'pending'
+  };
+  scheduledBroadcasts.set(broadcastId, entry);
+  return broadcastId;
+}
+
+function executeBroadcast(userId, message) {
+  const bot = activeBots.get(userId);
+  if (!bot) return { sent: 0, failed: 0, error: 'Bot not connected' };
+
+  const mySubs = allSubmissions.get(userId) || [];
+  const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
+
+  let sent = 0, failed = 0;
+
+  for (const sub of targets) {
+    try {
+      bot.telegram.sendMessage(sub.telegramChatId, message, { parse_mode: 'HTML' });
+      sent++;
+    } catch (err) {
+      failed++;
+      console.error(`Broadcast failed to ${sub.telegramChatId}:`, err.message);
+    }
+  }
+
+  return { sent, failed, total: targets.length };
+}
+
+// Background scheduler — checks every minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [broadcastId, task] of scheduledBroadcasts.entries()) {
+    if (task.status === 'pending' && now >= task.scheduledTime) {
+      console.log(`Executing scheduled broadcast \( {broadcastId} for user \){task.userId}`);
+      const result = executeBroadcast(task.userId, task.message);
+
+      if (result.error) {
+        task.status = 'failed';
+        task.error = result.error;
+      } else {
+        task.status = result.failed === 0 ? 'sent' : 'partial';
+        task.result = { sent: result.sent, failed: result.failed, total: result.total };
+      }
+      task.executedAt = new Date().toISOString();
+    }
+  }
+}, 60 * 1000);
 
 // ==================== JWT MIDDLEWARE ====================
 const authenticateToken = (req, res, next) => {
@@ -535,7 +592,7 @@ app.get('/f/:shortId', (req, res) => {
 // ==================== SUBSCRIPTION & CONTACTS ====================
 app.post('/api/subscribe/:shortId', async (req, res) => {
   const { shortId } = req.params;
-  const { name, email } = req.body; // "email" can be phone
+  const { name, email } = req.body;
 
   if (!name?.trim() || !email?.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
 
@@ -550,7 +607,6 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
 
   let list = allSubmissions.get(owner.id) || [];
 
-  // Check for existing contact
   const existingByContactIndex = list.findIndex(c => c.contact === contactValue);
 
   const newEntry = {
@@ -564,7 +620,6 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   };
 
   if (existingByContactIndex !== -1) {
-    // Update existing contact (keep chatId if subscribed)
     list[existingByContactIndex] = {
       ...list[existingByContactIndex],
       name: newEntry.name,
@@ -618,7 +673,7 @@ app.get('/api/contacts', authenticateToken, (req, res) => {
 });
 
 app.post('/api/contacts/delete', authenticateToken, (req, res) => {
-  const { contacts } = req.body; // array of contact strings
+  const { contacts } = req.body;
   if (!Array.isArray(contacts) || contacts.length === 0) {
     return res.status(400).json({ error: 'Provide an array of contact values to delete' });
   }
@@ -662,6 +717,50 @@ app.post('/api/broadcast', authenticateToken, async (req, res) => {
   }
 
   res.json({ success: true, sent, failed, total: targets.length });
+});
+
+// ==================== SCHEDULED BROADCAST ENDPOINTS ====================
+app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
+  const { message, scheduledTime, recipients = 'all' } = req.body;
+
+  if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
+  if (!scheduledTime || isNaN(new Date(scheduledTime).getTime())) {
+    return res.status(400).json({ error: 'Valid future datetime required' });
+  }
+
+  const scheduled = new Date(scheduledTime);
+  if (scheduled <= new Date()) {
+    return res.status(400).json({ error: 'Schedule time must be in the future' });
+  }
+
+  const userId = req.user.userId;
+  const broadcastId = scheduleBroadcast(userId, message, recipients, scheduledTime);
+
+  res.json({
+    success: true,
+    message: 'Broadcast scheduled!',
+    broadcastId,
+    scheduledTime: scheduled.toISOString(),
+    recipients
+  });
+});
+
+app.get('/api/broadcast/scheduled', authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+  const scheduled = Array.from(scheduledBroadcasts.values())
+    .filter(t => t.userId === userId)
+    .map(t => ({
+      broadcastId: t.broadcastId,
+      message: t.message.substring(0, 100) + (t.message.length > 100 ? '...' : ''),
+      scheduledTime: new Date(t.scheduledTime).toISOString(),
+      status: t.status,
+      executedAt: t.executedAt || null,
+      result: t.result || null,
+      recipients: t.recipients
+    }))
+    .sort((a, b) => new Date(b.scheduledTime) - new Date(a.scheduledTime));
+
+  res.json({ success: true, scheduled });
 });
 
 // ==================== VIEWS ====================
@@ -835,10 +934,12 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log(`\nSENDEM SERVER — NO DUPLICATES (CONTACTS & CHAT IDs)`);
+  console.log(`\nSENDEM SERVER — NO DUPLICATES (CONTACTS & CHAT IDs) + SCHEDULED BROADCASTS`);
   console.log(`http://localhost:${PORT}`);
   console.log(`✓ Contacts updated/replaced on duplicate contact value`);
   console.log(`✓ Existing chat ID updated with latest name/contact`);
   console.log(`✓ Bulk delete: /api/contacts/delete`);
+  console.log(`✓ Scheduled broadcasts: /api/broadcast/schedule`);
+  console.log(`✓ View scheduled: /api/broadcast/scheduled`);
   console.log(`✓ All features intact\n`);
 });
