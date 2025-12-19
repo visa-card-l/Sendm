@@ -1020,7 +1020,7 @@ app.listen(PORT, () => {
   console.log('\nSENDEM SERVER — FIXED SCHEDULER VERSION');
   console.log('http://localhost:' + PORT);
   console.log('✓ Broadcasts persistent across restarts');
-  ✓ Immediate send: /api/broadcast/now');
-  ✓ Scheduled: always uses current bot instance');
+  console.log('✓ Immediate send: /api/broadcast/now');
+  console.log('✓ Scheduled: always uses current bot instance');
   console.log('✓ All routes complete and functional\n');
 });
