@@ -1,4 +1,4 @@
-// server.js — FIXED VERSION (December 19, 2025)
+// server.js — FIXED VERSION with detailed logging (December 19, 2025)
 // Features:
 // - Accepts email OR phone number (no validation)
 // - No duplicate contacts: same contact (email/phone) → replace/update
@@ -7,7 +7,8 @@
 // - Immediate + Scheduled Telegram broadcasts (persistent across restarts)
 // - All links use string concatenation
 // - Per-broadcast setTimeout for precise scheduling (re-scheduled on restart)
-// - FIXED: Scheduled broadcasts now always use the CURRENT active bot instance
+// - FIXED: Scheduled broadcasts always use current bot instance
+// - ENHANCED: Detailed logging for failures (chat IDs, error messages)
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -56,7 +57,6 @@ function loadScheduledBroadcasts() {
       const data = JSON.parse(fs.readFileSync(BROADCASTS_FILE, 'utf8'));
       for (const entry of data) {
         scheduledBroadcasts.set(entry.broadcastId, entry);
-        // Re-schedule pending broadcasts
         if (entry.status === 'pending') {
           const delay = entry.scheduledTime - Date.now();
           if (delay > 0) {
@@ -66,7 +66,6 @@ function loadScheduledBroadcasts() {
             scheduledTimeouts.set(entry.broadcastId, timeoutId);
             console.log('Re-scheduled broadcast ' + entry.broadcastId + ' in ' + Math.round(delay / 1000) + ' seconds');
           } else {
-            // Missed while server was down → execute immediately
             executeScheduledBroadcast(entry.broadcastId);
           }
         }
@@ -89,25 +88,34 @@ function saveScheduledBroadcasts() {
 
 function executeScheduledBroadcast(broadcastId) {
   const task = scheduledBroadcasts.get(broadcastId);
-  if (!task || task.status !== 'pending') return;
+  if (!task || task.status !== 'pending') {
+    console.warn(`[SCHEDULED] Task ${broadcastId} not pending or not found`);
+    return;
+  }
 
-  console.log(`[SCHEDULED] Executing broadcast \( {broadcastId} for user \){task.userId} at ${new Date().toISOString()}`);
+  console.log(`[SCHEDULED START] Executing broadcast \( {broadcastId} for user \){task.userId} at ${new Date().toISOString()}`);
+  console.log(`[SCHEDULED INFO] Message preview: "${task.message.substring(0, 50)}..."`);
 
   const result = executeBroadcast(task.userId, task.message);
 
   if (result.error) {
     task.status = 'failed';
     task.error = result.error;
-    console.error(`[SCHEDULED] Broadcast \( {broadcastId} failed: \){result.error}`);
+    console.error(`[SCHEDULED FAIL] Broadcast \( {broadcastId} failed: \){result.error}`);
   } else {
     task.status = result.failed === 0 ? 'sent' : 'partial';
     task.result = { sent: result.sent, failed: result.failed, total: result.total };
+    if (result.failures) {
+      task.failures = result.failures;
+    }
   }
   task.executedAt = new Date().toISOString();
 
   scheduledBroadcasts.set(broadcastId, task);
   scheduledTimeouts.delete(broadcastId);
   saveScheduledBroadcasts();
+
+  console.log(`[SCHEDULED END] Broadcast \( {broadcastId} completed with status: \){task.status}`);
 }
 
 function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
@@ -141,30 +149,52 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
 }
 
 function executeBroadcast(userId, message) {
-  // ALWAYS fetch the CURRENT active bot instance at execution time
   const bot = activeBots.get(userId);
+  
   if (!bot || !bot.telegram) {
-    console.error(`[BROADCAST] Bot not active for user ${userId}`);
+    console.error(`[BROADCAST ERROR] Bot not active for user \( {userId} at \){new Date().toISOString()}`);
+    console.error(`[BROADCAST ERROR] activeBots keys: ${Array.from(activeBots.keys()).join(', ') || 'none'}`);
     return { sent: 0, failed: 0, error: 'Bot not connected at execution time' };
   }
+
+  console.log(`[BROADCAST START] User \( {userId} - Bot active, preparing to send " \){message.substring(0, 50)}..."`);
 
   const mySubs = allSubmissions.get(userId) || [];
   const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
 
-  let sent = 0, failed = 0;
+  console.log(`[BROADCAST INFO] Found \( {targets.length} valid targets for user \){userId}`);
+
+  let sent = 0;
+  let failed = 0;
+  const failures = [];
 
   for (const sub of targets) {
+    const chatId = sub.telegramChatId;
     try {
-      bot.telegram.sendMessage(sub.telegramChatId, message, { parse_mode: 'HTML' });
+      bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
       sent++;
+      console.log(`[BROADCAST SUCCESS] Sent to \( {chatId} ( \){sub.name || 'unknown'})`);
     } catch (err) {
       failed++;
-      console.error(`Broadcast failed to ${sub.telegramChatId}:`, err.message);
+      const errorMsg = err.message || err.description || 'Unknown error';
+      console.error(`[BROADCAST FAIL] To \( {chatId} ( \){sub.name || 'unknown'}): ${errorMsg}`);
+      failures.push({ chatId, error: errorMsg });
     }
   }
 
-  console.log(`[BROADCAST] User \( {userId} - Sent: \){sent}, Failed: \( {failed}, Total: \){targets.length}`);
-  return { sent, failed, total: targets.length };
+  const summary = {
+    sent,
+    failed,
+    total: targets.length,
+    failures: failures.length > 0 ? failures : undefined
+  };
+
+  console.log(`[BROADCAST SUMMARY] User \( {userId} - Sent: \){sent}, Failed: \( {failed}, Total: \){targets.length}`);
+  if (failures.length > 0) {
+    console.log('[BROADCAST SUMMARY] Failure details:', JSON.stringify(failures, null, 2));
+  }
+
+  return summary;
 }
 
 // Load on startup
@@ -801,13 +831,11 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
 
   const userId = req.user.userId;
 
-  // Immediate send if "now" is specified
   if (scheduledTime === 'now') {
     const result = executeBroadcast(userId, message);
     return res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total, immediate: true });
   }
 
-  // Scheduled broadcast
   if (!scheduledTime || isNaN(new Date(scheduledTime).getTime())) {
     return res.status(400).json({ error: 'Valid future datetime or "now" required' });
   }
@@ -1017,10 +1045,11 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FIXED SCHEDULER VERSION');
+  console.log('\nSENDEM SERVER — FIXED SCHEDULER WITH DETAILED LOGGING');
   console.log('http://localhost:' + PORT);
   console.log('✓ Broadcasts persistent across restarts');
   console.log('✓ Immediate send: /api/broadcast/now');
   console.log('✓ Scheduled: always uses current bot instance');
+  console.log('✓ Detailed failure logging for scheduled broadcasts');
   console.log('✓ All routes complete and functional\n');
 });
