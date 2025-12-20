@@ -1068,7 +1068,6 @@ app.listen(PORT, () => {
   console.log('\nSENDEM SERVER — BATCHED QUEUING + FIXED SCHEDULER');
   console.log(`http://localhost:${PORT}`);
   console.log('✓ Broadcasts persistent across restarts');
-  ✓ Immediate & scheduled broadcasts with batch queuing (25 msg / 15s)');
   console.log('✓ Safe for large subscriber lists (1000+)');
   console.log('✓ Detailed failure logging');
   console.log('✓ All routes complete and functional\n');
