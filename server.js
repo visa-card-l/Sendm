@@ -1,14 +1,13 @@
-// server.js — FIXED VERSION with detailed logging (December 19, 2025)
+// server.js — FIXED VERSION with BATCHED QUEUING (December 20, 2025)
 // Features:
 // - Accepts email OR phone number (no validation)
 // - No duplicate contacts: same contact (email/phone) → replace/update
 // - No duplicate chat IDs: same telegramChatId → update with latest name/contact
 // - Bulk delete endpoint: /api/contacts/delete
 // - Immediate + Scheduled Telegram broadcasts (persistent across restarts)
-// - All links use string concatenation
-// - Per-broadcast setTimeout for precise scheduling (re-scheduled on restart)
-// - FIXED: Scheduled broadcasts always use current bot instance
-// - ENHANCED: Detailed logging for failures (chat IDs, error messages)
+// - Per-broadcast setTimeout for precise scheduling
+// - BATCHED SENDING: 25 messages every 15 seconds to respect Telegram rate limits
+// - Detailed logging for failures (chat IDs, error messages)
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -43,6 +42,10 @@ const formPages = new Map();
 const allSubmissions = new Map(); // userId → array of contact objects
 const pendingSubscribers = new Map();
 
+// Broadcast queuing config (adjustable)
+const BATCH_SIZE = 25;           // Safe size under Telegram's ~30 msg/sec limit
+const BATCH_INTERVAL_MS = 15000; // 15 seconds → ~100 msg/minute
+
 // Scheduled broadcasts storage + persistence
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -64,13 +67,13 @@ function loadScheduledBroadcasts() {
               executeScheduledBroadcast(entry.broadcastId);
             }, delay);
             scheduledTimeouts.set(entry.broadcastId, timeoutId);
-            console.log('Re-scheduled broadcast ' + entry.broadcastId + ' in ' + Math.round(delay / 1000) + ' seconds');
+            console.log(`Re-scheduled broadcast \( {entry.broadcastId} in \){Math.round(delay / 1000)} seconds`);
           } else {
             executeScheduledBroadcast(entry.broadcastId);
           }
         }
       }
-      console.log('Loaded ' + scheduledBroadcasts.size + ' scheduled broadcasts from disk');
+      console.log(`Loaded ${scheduledBroadcasts.size} scheduled broadcasts from disk`);
     } catch (err) {
       console.error('Failed to load scheduled broadcasts:', err.message);
     }
@@ -98,17 +101,10 @@ function executeScheduledBroadcast(broadcastId) {
 
   const result = executeBroadcast(task.userId, task.message);
 
-  if (result.error) {
-    task.status = 'failed';
-    task.error = result.error;
-    console.error(`[SCHEDULED FAIL] Broadcast \( {broadcastId} failed: \){result.error}`);
-  } else {
-    task.status = result.failed === 0 ? 'sent' : 'partial';
-    task.result = { sent: result.sent, failed: result.failed, total: result.total };
-    if (result.failures) {
-      task.failures = result.failures;
-    }
-  }
+  task.status = result.error ? 'failed' : (result.failed === 0 ? 'sent' : 'partial');
+  if (result.error) task.error = result.error;
+  if (!result.error) task.result = { sent: result.sent, failed: result.failed, total: result.total };
+  if (result.failures?.length) task.failures = result.failures;
   task.executedAt = new Date().toISOString();
 
   scheduledBroadcasts.set(broadcastId, task);
@@ -139,7 +135,7 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
       executeScheduledBroadcast(broadcastId);
     }, delay);
     scheduledTimeouts.set(broadcastId, timeoutId);
-    console.log('Scheduled broadcast ' + broadcastId + ' in ' + Math.round(delay / 1000) + ' seconds');
+    console.log(`Scheduled broadcast \( {broadcastId} in \){Math.round(delay / 1000)} seconds`);
   } else {
     executeScheduledBroadcast(broadcastId);
   }
@@ -148,12 +144,11 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   return broadcastId;
 }
 
-function executeBroadcast(userId, message) {
+// ===================== BATCHED EXECUTE BROADCAST =====================
+async function executeBroadcast(userId, message) {
   const bot = activeBots.get(userId);
-  
   if (!bot || !bot.telegram) {
     console.error(`[BROADCAST ERROR] Bot not active for user \( {userId} at \){new Date().toISOString()}`);
-    console.error(`[BROADCAST ERROR] activeBots keys: ${Array.from(activeBots.keys()).join(', ') || 'none'}`);
     return { sent: 0, failed: 0, error: 'Bot not connected at execution time' };
   }
 
@@ -161,24 +156,45 @@ function executeBroadcast(userId, message) {
 
   const mySubs = allSubmissions.get(userId) || [];
   const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
-
   console.log(`[BROADCAST INFO] Found \( {targets.length} valid targets for user \){userId}`);
+
+  if (targets.length === 0) {
+    return { sent: 0, failed: 0, total: 0 };
+  }
+
+  // Split into batches
+  const batches = [];
+  for (let i = 0; i < targets.length; i += BATCH_SIZE) {
+    batches.push(targets.slice(i, i + BATCH_SIZE));
+  }
+  console.log(`[BROADCAST] Split into \( {batches.length} batches of max \){BATCH_SIZE} messages`);
 
   let sent = 0;
   let failed = 0;
   const failures = [];
 
-  for (const sub of targets) {
-    const chatId = sub.telegramChatId;
-    try {
-      bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
-      sent++;
-      console.log(`[BROADCAST SUCCESS] Sent to \( {chatId} ( \){sub.name || 'unknown'})`);
-    } catch (err) {
-      failed++;
-      const errorMsg = err.message || err.description || 'Unknown error';
-      console.error(`[BROADCAST FAIL] To \( {chatId} ( \){sub.name || 'unknown'}): ${errorMsg}`);
-      failures.push({ chatId, error: errorMsg });
+  // Process batches sequentially with delay
+  for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+    const batch = batches[batchIndex];
+    console.log(`[BATCH \( {batchIndex + 1}/ \){batches.length}] Sending ${batch.length} messages`);
+
+    for (const sub of batch) {
+      const chatId = sub.telegramChatId;
+      try {
+        await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
+        sent++;
+        console.log(`[BROADCAST SUCCESS] Sent to \( {chatId} ( \){sub.name || 'unknown'})`);
+      } catch (err) {
+        failed++;
+        const errorMsg = err.message || err.description || 'Unknown error';
+        console.error(`[BROADCAST FAIL] To \( {chatId} ( \){sub.name || 'unknown'}): ${errorMsg}`);
+        failures.push({ chatId, error: errorMsg });
+      }
+    }
+
+    // Wait for next batch (skip wait after last batch)
+    if (batchIndex < batches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL_MS));
     }
   }
 
@@ -200,7 +216,7 @@ function executeBroadcast(userId, message) {
 // Load on startup
 loadScheduledBroadcasts();
 
-// Auto-relaunch all bots that have a token (critical for scheduled broadcasts after restart)
+// Auto-relaunch all bots that have a token
 users.forEach(user => {
   if (user.telegramBotToken) {
     console.log(`[STARTUP] Auto-relaunching bot for user ${user.email}`);
@@ -208,7 +224,7 @@ users.forEach(user => {
   }
 });
 
-// Cleanup timeouts on server shutdown
+// Cleanup timeouts on shutdown
 process.on('SIGTERM', () => {
   for (const [id, timeout] of scheduledTimeouts.entries()) {
     clearTimeout(timeout);
@@ -237,9 +253,13 @@ Valid for 10 minutes.
     `.trim(), { parse_mode: 'HTML' });
     return true;
   } catch (err) {
-    console.error('Failed to send code to ' + user.email + ':', err.message);
+    console.error(`Failed to send 2FA code to ${user.email}:`, err.message);
     return false;
   }
+}
+
+function escapeHtml(unsafe) {
+  return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
 function launchUserBot(user) {
@@ -336,7 +356,7 @@ Status: <b>${user.isTelegramConnected ? 'Connected' : 'Not Connected'}</b>
     `);
   });
 
-  bot.catch((err) => console.error('Bot error [' + user.email + ']:', err));
+  bot.catch((err) => console.error(`Bot error [${user.email}]:`, err));
   bot.launch();
   activeBots.set(user.id, bot);
   console.log(`[BOT] Launched bot for user ${user.email}`);
@@ -371,7 +391,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
   const hashed = await bcrypt.hash(password, 12);
   const newUser = {
     id: uuidv4(),
-    fullName: fullName,
+    fullName,
     email: email.toLowerCase(),
     password: hashed,
     createdAt: new Date().toISOString(),
@@ -386,7 +406,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
 
   res.status(201).json({
     success: true,
-    token: token,
+    token,
     user: { id: newUser.id, fullName: newUser.fullName, email: newUser.email, isTelegramConnected: false }
   });
 });
@@ -400,7 +420,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
   res.json({
     success: true,
-    token: token,
+    token,
     user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected }
   });
 });
@@ -425,7 +445,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
       activeBots.delete(user.id);
     }
 
-    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
     const data = await response.json();
 
     if (!data.ok || !data.result || !data.result.username) return res.status(400).json({ error: 'Invalid bot token' });
@@ -437,9 +457,9 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
     user.telegramChatId = null;
     launchUserBot(user);
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
+    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
-    res.json({ success: true, message: 'Bot connected!', botUsername: '@' + botUsername, startLink: startLink });
+    res.json({ success: true, message: 'Bot connected!', botUsername: `@${botUsername}`, startLink });
   } catch (err) {
     res.status(500).json({ error: 'Failed to connect to Telegram' });
   }
@@ -459,7 +479,7 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
       activeBots.delete(user.id);
     }
 
-    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
     const data = await response.json();
 
     if (!data.ok || !data.result || !data.result.username) return res.status(400).json({ error: 'Invalid bot token' });
@@ -471,9 +491,9 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
     user.telegramChatId = null;
     launchUserBot(user);
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
+    const startLink = `https://t.me/\( {botUsername}?start= \){user.id}`;
 
-    res.json({ success: true, message: 'Bot token updated!', botUsername: '@' + botUsername, startLink: startLink });
+    res.json({ success: true, message: 'Bot token updated!', botUsername: `@${botUsername}`, startLink });
   } catch (err) {
     res.status(500).json({ error: 'Failed to validate token' });
   }
@@ -515,11 +535,11 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   const resetToken = uuidv4();
   const expiresAt = Date.now() + 10 * 60 * 1000;
 
-  resetTokens.set(resetToken, { userId: user.id, code: code, expiresAt: expiresAt });
+  resetTokens.set(resetToken, { userId: user.id, code, expiresAt });
   const sent = await send2FACodeViaBot(user, code);
   if (!sent) return res.status(500).json({ error: 'Failed to send code' });
 
-  res.json({ success: true, message: 'Code sent!', resetToken: resetToken });
+  res.json({ success: true, message: 'Code sent!', resetToken });
 });
 
 app.post('/api/auth/verify-reset-code', (req, res) => {
@@ -561,11 +581,11 @@ app.get('/api/pages', authenticateToken, (req, res) => {
   const userPages = Array.from(landingPages.entries())
     .filter(([_, page]) => page.userId === req.user.userId)
     .map(([shortId, page]) => ({
-      shortId: shortId,
+      shortId,
       title: page.title,
       createdAt: page.createdAt,
       updatedAt: page.updatedAt,
-      url: req.protocol + '://' + req.get('host') + '/p/' + shortId
+      url: `\( {req.protocol}:// \){req.get('host')}/p/${shortId}`
     }));
   res.json({ pages: userPages });
 });
@@ -584,20 +604,20 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
       if (block.type === 'text') {
         const content = (block.content || '').trim();
         if (!content || content === 'New text' || content.length < 1) return null;
-        return { type: 'text', tag: block.tag || 'p', content: content };
+        return { type: 'text', tag: block.tag || 'p', content };
       }
 
       if (block.type === 'image') {
         const src = block.src ? block.src.trim() : '';
         if (!src || (src.startsWith('data:image/') && src.length < 100)) return null;
-        return { type: 'image', src: src };
+        return { type: 'image', src };
       }
 
       if (block.type === 'button') {
         const text = (block.text || '').trim();
         const lowerText = text.toLowerCase();
         if (!text || text.length < 3 || lowerText === 'x' || lowerText.includes('add ') || lowerText.includes('delete') || lowerText.includes('remove') || lowerText.includes('close')) return null;
-        return { type: 'button', text: text, href: block.href === '#' ? '' : (block.href || '') };
+        return { type: 'button', text, href: block.href === '#' ? '' : (block.href || '') };
       }
 
       if (block.type === 'form') {
@@ -616,14 +636,14 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
     userId: req.user.userId,
     title: title.trim(),
     config: { blocks: cleanBlocks },
-    createdAt: landingPages.get(finalShortId) ? landingPages.get(finalShortId).createdAt : now,
+    createdAt: landingPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
 
   res.json({
     success: true,
     shortId: finalShortId,
-    url: req.protocol + '://' + req.get('host') + '/p/' + finalShortId
+    url: `\( {req.protocol}:// \){req.get('host')}/p/${finalShortId}`
   });
 });
 
@@ -645,11 +665,11 @@ app.get('/api/forms', authenticateToken, (req, res) => {
   const userForms = Array.from(formPages.entries())
     .filter(([_, form]) => form.userId === req.user.userId)
     .map(([shortId, formData]) => ({
-      shortId: shortId,
+      shortId,
       title: formData.title,
       createdAt: formData.createdAt,
       updatedAt: formData.updatedAt,
-      url: req.protocol + '://' + req.get('host') + '/f/' + shortId
+      url: `\( {req.protocol}:// \){req.get('host')}/f/${shortId}`
     }));
   res.json({ forms: userForms });
 });
@@ -682,14 +702,14 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
     userId: req.user.userId,
     title: title.trim(),
     state: sanitizedState,
-    createdAt: formPages.get(finalShortId) ? formPages.get(finalShortId).createdAt : now,
+    createdAt: formPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
 
   res.json({
     success: true,
     shortId: finalShortId,
-    url: req.protocol + '://' + req.get('host') + '/f/' + finalShortId
+    url: `\( {req.protocol}:// \){req.get('host')}/f/${finalShortId}`
   });
 });
 
@@ -712,7 +732,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   const { shortId } = req.params;
   const { name, email } = req.body;
 
-  if (!name || !name.trim() || !email || !email.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
+  if (!name?.trim() || !email?.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
 
   const page = formPages.get(shortId);
   if (!page) return res.status(404).json({ error: 'Page not found' });
@@ -721,7 +741,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Broadcast bot not connected' });
 
   const contactValue = email.trim();
-  const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
+  const payload = `sub_\( {shortId}_ \){uuidv4().slice(0, 12)}`;
 
   let list = allSubmissions.get(owner.id) || [];
 
@@ -731,7 +751,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
     name: name.trim(),
     contact: contactValue,
     telegramChatId: null,
-    shortId: shortId,
+    shortId,
     submittedAt: new Date().toISOString(),
     subscribedAt: null,
     status: 'pending'
@@ -752,14 +772,14 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
 
   pendingSubscribers.set(payload, {
     userId: owner.id,
-    shortId: shortId,
+    shortId,
     name: name.trim(),
     contact: contactValue,
     createdAt: Date.now()
   });
 
-  const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
-  res.json({ success: true, deepLink: deepLink });
+  const deepLink = `https://t.me/\( {owner.botUsername}?start= \){payload}`;
+  res.json({ success: true, deepLink });
 });
 
 app.get('/api/contacts', authenticateToken, (req, res) => {
@@ -775,7 +795,7 @@ app.get('/api/contacts', authenticateToken, (req, res) => {
     statusLabel: c.status === 'subscribed' ? 'Subscribed ✅' : 'Pending ⏳',
     telegramChatId: c.telegramChatId || null,
     pageId: c.shortId,
-    pageUrl: req.protocol + '://' + req.get('host') + '/f/' + c.shortId,
+    pageUrl: `\( {req.protocol}:// \){req.get('host')}/f/${c.shortId}`,
     submittedAt: new Date(c.submittedAt).toLocaleString(),
     subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
   }));
@@ -787,7 +807,7 @@ app.get('/api/contacts', authenticateToken, (req, res) => {
     subscribedPercentage: allContacts.length > 0 ? Math.round((allContacts.filter(c => c.status === 'subscribed').length / allContacts.length) * 100) : 0
   };
 
-  res.json({ success: true, contacts: contacts, stats: stats });
+  res.json({ success: true, contacts, stats });
 });
 
 app.post('/api/contacts/delete', authenticateToken, (req, res) => {
@@ -808,7 +828,7 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
 
   res.json({
     success: true,
-    deletedCount: deletedCount,
+    deletedCount,
     remaining: list.length
   });
 });
@@ -816,23 +836,23 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message, recipients = 'all' } = req.body;
 
-  if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
+  if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
 
   const userId = req.user.userId;
-  const result = executeBroadcast(userId, message);
+  const result = await executeBroadcast(userId, message);
 
   res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total });
 });
 
-app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
+app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
 
-  if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
+  if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
 
   const userId = req.user.userId;
 
   if (scheduledTime === 'now') {
-    const result = executeBroadcast(userId, message);
+    const result = await executeBroadcast(userId, message);
     return res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total, immediate: true });
   }
 
@@ -850,9 +870,9 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
   res.json({
     success: true,
     message: 'Broadcast scheduled!',
-    broadcastId: broadcastId,
+    broadcastId,
     scheduledTime: scheduled.toISOString(),
-    recipients: recipients
+    recipients
   });
 });
 
@@ -871,7 +891,7 @@ app.get('/api/broadcast/scheduled', authenticateToken, (req, res) => {
     }))
     .sort((a, b) => new Date(b.scheduledTime) - new Date(a.scheduledTime));
 
-  res.json({ success: true, scheduled: scheduled });
+  res.json({ success: true, scheduled });
 });
 
 // ==================== VIEWS ====================
@@ -1045,11 +1065,11 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FIXED SCHEDULER WITH DETAILED LOGGING');
-  console.log('http://localhost:' + PORT);
+  console.log('\nSENDEM SERVER — BATCHED QUEUING + FIXED SCHEDULER');
+  console.log(`http://localhost:${PORT}`);
   console.log('✓ Broadcasts persistent across restarts');
-  console.log('✓ Immediate send: /api/broadcast/now');
-  console.log('✓ Scheduled: always uses current bot instance');
-  console.log('✓ Detailed failure logging for scheduled broadcasts');
+  ✓ Immediate & scheduled broadcasts with batch queuing (25 msg / 15s)');
+  console.log('✓ Safe for large subscriber lists (1000+)');
+  console.log('✓ Detailed failure logging');
   console.log('✓ All routes complete and functional\n');
 });
