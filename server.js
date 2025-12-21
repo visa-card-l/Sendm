@@ -1,4 +1,4 @@
-// server.js — COMPLETE VERSION with EJS templates restored (December 21, 2025)
+// server.js — FIXED: Editor loading works like original (no auth on fetch config/state)
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -156,7 +156,7 @@ loadScheduledBroadcasts();
 users.forEach(user => { if (user.telegramBotToken) launchUserBot(user); });
 process.on('SIGTERM', () => { for (const t of scheduledTimeouts.values()) clearTimeout(t); scheduledTimeouts.clear(); });
 
-// Helpers
+// Helpers (unchanged)
 function generate2FACode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
 
 async function send2FACodeViaBot(user, code) {
@@ -171,7 +171,7 @@ async function send2FACodeViaBot(user, code) {
 }
 
 function escapeHtml(unsafe) {
-  return unsafe.replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">").replace(/"/g, '"').replace(/'/g, "'");
+  return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
 function launchUserBot(user) {
@@ -476,9 +476,10 @@ app.get('/p/:shortId', (req, res) => {
   res.render('landing', { title: page.title, blocks: page.config.blocks });
 });
 
-app.get('/api/page/:shortId', authenticateToken, (req, res) => {
+// Editor fetch (NO auth - mirrors working code)
+app.get('/api/page/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
-  if (!page || page.userId !== req.user.userId) return res.status(404).json({ error: 'Page not found' });
+  if (!page) return res.status(404).json({ error: 'Page not found' });
   res.json({ shortId: req.params.shortId, title: page.title, config: page.config });
 });
 
@@ -527,13 +528,14 @@ app.get('/f/:shortId', (req, res) => {
   res.render('form', { title: form.title, state: form.state });
 });
 
-app.get('/api/form/:shortId', authenticateToken, (req, res) => {
+// Editor fetch (NO auth - mirrors working code)
+app.get('/api/form/:shortId', (req, res) => {
   const form = formPages.get(req.params.shortId);
-  if (!form || form.userId !== req.user.userId) return res.status(404).json({ error: 'Form not found' });
+  if (!form) return res.status(404).json({ error: 'Form not found' });
   res.json({ shortId: req.params.shortId, title: form.title, state: form.state });
 });
 
-// Subscription & Contacts
+// Subscription & Contacts (unchanged)
 app.post('/api/subscribe/:shortId', async (req, res) => {
   const { shortId } = req.params;
   const { name, email } = req.body;
@@ -600,7 +602,7 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
 });
 
-// Broadcast Routes
+// Broadcast Routes (unchanged)
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
@@ -688,7 +690,7 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res)
   res.json({ success: true, broadcastId, scheduledTime: new Date(task.scheduledTime).toISOString() });
 });
 
-// Views - Write EJS files at startup
+// Views - Write EJS files
 const viewsDir = path.join(__dirname, 'views');
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
 if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
@@ -859,5 +861,8 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('Server running on http://localhost:' + PORT);
+  console.log('\nSENDEM SERVER — EDITOR LOADING FIXED');
+  console.log('http://localhost:' + PORT);
+  console.log('✓ Config fetch for editing now works (no auth on /api/page/:shortId and /api/form/:shortId)');
+  console.log('✓ All other protected routes intact\n');
 });
