@@ -1,4 +1,4 @@
-// server.js — FIXED VERSION: PROPER DEDUPLICATION + STRING CONCATENATION (December 21, 2025)
+// server.js — COMPLETE VERSION with EDIT/DELETE SCHEDULED BROADCASTS (December 21, 2025)
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -54,9 +54,7 @@ function loadScheduledBroadcasts() {
         if (entry.status === 'pending') {
           const delay = entry.scheduledTime - Date.now();
           if (delay > 0) {
-            const timeoutId = setTimeout(() => {
-              executeScheduledBroadcast(entry.broadcastId);
-            }, delay);
+            const timeoutId = setTimeout(() => executeScheduledBroadcast(entry.broadcastId), delay);
             scheduledTimeouts.set(entry.broadcastId, timeoutId);
             console.log('Re-scheduled broadcast ' + entry.broadcastId + ' in ' + Math.round(delay / 1000) + ' seconds');
           } else {
@@ -120,9 +118,7 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
 
   const delay = scheduledMs - Date.now();
   if (delay > 0) {
-    const timeoutId = setTimeout(() => {
-      executeScheduledBroadcast(broadcastId);
-    }, delay);
+    const timeoutId = setTimeout(() => executeScheduledBroadcast(broadcastId), delay);
     scheduledTimeouts.set(broadcastId, timeoutId);
     console.log('Scheduled broadcast ' + broadcastId + ' in ' + Math.round(delay / 1000) + ' seconds');
   } else {
@@ -674,7 +670,6 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   };
 
   if (existingByContactIndex !== -1) {
-    // Update existing — preserve status, chatId, subscribedAt
     const existing = list[existingByContactIndex];
     list[existingByContactIndex] = {
       ...existing,
@@ -683,7 +678,6 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
       submittedAt: baseEntry.submittedAt,
     };
   } else {
-    // New contact — start as pending
     list.push({
       ...baseEntry,
       telegramChatId: null,
@@ -810,14 +804,98 @@ app.get('/api/broadcast/scheduled', authenticateToken, (req, res) => {
       status: t.status,
       executedAt: t.executedAt || null,
       result: t.result || null,
-      recipients: t.recipients
+      recipients: t.recipients,
+      isEditable: t.status === 'pending'  // Added for frontend convenience
     }))
     .sort((a, b) => new Date(b.scheduledTime) - new Date(a.scheduledTime));
 
   res.json({ success: true, scheduled: scheduled });
 });
 
-// Views (EJS files written at startup)
+// DELETE scheduled broadcast
+app.delete('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res) => {
+  const { broadcastId } = req.params;
+  const userId = req.user.userId;
+
+  const task = scheduledBroadcasts.get(broadcastId);
+  if (!task || task.userId !== userId) {
+    return res.status(404).json({ error: 'Scheduled broadcast not found' });
+  }
+
+  // Clear any pending timeout
+  if (scheduledTimeouts.has(broadcastId)) {
+    clearTimeout(scheduledTimeouts.get(broadcastId));
+    scheduledTimeouts.delete(broadcastId);
+  }
+
+  scheduledBroadcasts.delete(broadcastId);
+  saveScheduledBroadcasts();
+
+  console.log('[BROADCAST DELETE] User ' + userId + ' deleted broadcast ' + broadcastId);
+
+  res.json({ success: true, message: 'Scheduled broadcast deleted' });
+});
+
+// EDIT scheduled broadcast
+app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res) => {
+  const { broadcastId } = req.params;
+  const { message, scheduledTime, recipients } = req.body;
+  const userId = req.user.userId;
+
+  const task = scheduledBroadcasts.get(broadcastId);
+  if (!task || task.userId !== userId) {
+    return res.status(404).json({ error: 'Scheduled broadcast not found' });
+  }
+
+  if (task.status !== 'pending') {
+    return res.status(400).json({ error: 'Cannot edit a broadcast that has already been executed or failed' });
+  }
+
+  // Clear existing timeout
+  if (scheduledTimeouts.has(broadcastId)) {
+    clearTimeout(scheduledTimeouts.get(broadcastId));
+    scheduledTimeouts.delete(broadcastId);
+  }
+
+  // Update fields if provided
+  if (message && message.trim()) task.message = message.trim();
+  if (recipients) task.recipients = recipients;
+
+  let newScheduledTime = task.scheduledTime;
+  if (scheduledTime) {
+    const newDate = new Date(scheduledTime);
+    if (isNaN(newDate.getTime())) {
+      return res.status(400).json({ error: 'Invalid scheduled time format' });
+    }
+    if (newDate <= new Date()) {
+      return res.status(400).json({ error: 'Scheduled time must be in the future' });
+    }
+    newScheduledTime = newDate.getTime();
+    task.scheduledTime = newScheduledTime;
+  }
+
+  // Re-schedule
+  const delay = newScheduledTime - Date.now();
+  if (delay > 0) {
+    const timeoutId = setTimeout(() => executeScheduledBroadcast(broadcastId), delay);
+    scheduledTimeouts.set(broadcastId, timeoutId);
+    console.log('Re-scheduled broadcast ' + broadcastId + ' in ' + Math.round(delay / 1000) + ' seconds');
+  } else {
+    executeScheduledBroadcast(broadcastId);
+  }
+
+  scheduledBroadcasts.set(broadcastId, task);
+  saveScheduledBroadcasts();
+
+  res.json({
+    success: true,
+    message: 'Scheduled broadcast updated',
+    broadcastId: broadcastId,
+    scheduledTime: new Date(task.scheduledTime).toISOString()
+  });
+});
+
+// Views (EJS)
 const viewsDir = path.join(__dirname, 'views');
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
 if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
@@ -871,7 +949,7 @@ fs.writeFileSync(path.join(viewsDir, 'landing.ejs'), `
 </html>
 `);
 
-// form.ejs
+// form.ejs (with client-side fetch using string concat)
 fs.writeFileSync(path.join(viewsDir, 'form.ejs'), `
 <!DOCTYPE html>
 <html lang="en">
@@ -992,9 +1070,10 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), `
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FIXED DEDUPLICATION + STRING CONCATENATION');
+  console.log('\nSENDEM SERVER — FULL VERSION with EDIT/DELETE SCHEDULED BROADCASTS');
   console.log('http://localhost:' + PORT);
-  console.log('✓ No duplicate pending/subscribed entries for same contact');
-  console.log('✓ All links use string concatenation');
+  console.log('✓ Deduplication fixed');
+  console.log('✓ String concatenation everywhere');
+  console.log('✓ List, edit & delete scheduled broadcasts');
   console.log('✓ All routes intact\n');
 });
