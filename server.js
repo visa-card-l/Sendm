@@ -1,14 +1,4 @@
-// server.js â€” FIXED VERSION with BATCHED QUEUING & STRING CONCATENATION (December 20, 2025)
-// Features:
-// - Accepts email OR phone number (no validation)
-// - No duplicate contacts: same contact (email/phone) â†’ replace/update
-// - No duplicate chat IDs: same telegramChatId â†’ update with latest name/contact
-// - Bulk delete endpoint: /api/contacts/delete
-// - Immediate + Scheduled Telegram broadcasts (persistent across restarts)
-// - Per-broadcast setTimeout for precise scheduling
-// - BATCHED SENDING: 25 messages every 15 seconds to respect Telegram rate limits
-// - ALL LINKS use string concatenation (no template literals)
-// - Detailed logging for failures (chat IDs, error messages)
+// server.js — COMPLETE VERSION with EJS templates restored (December 21, 2025)
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -40,20 +30,20 @@ const activeBots = new Map();
 const resetTokens = new Map();
 const landingPages = new Map();
 const formPages = new Map();
-const allSubmissions = new Map(); // userId â†’ array of contact objects
+const allSubmissions = new Map();
 const pendingSubscribers = new Map();
 
-// Broadcast queuing config (adjustable)
-const BATCH_SIZE = 25;           // Safe size under Telegram's ~30 msg/sec limit
-const BATCH_INTERVAL_MS = 15000; // 15 seconds â†’ ~100 msg/minute
+// Broadcast config
+const BATCH_SIZE = 25;
+const BATCH_INTERVAL_MS = 15000;
 
-// Scheduled broadcasts storage + persistence
+// Persistence
 const DATA_DIR = path.join(__dirname, 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const BROADCASTS_FILE = path.join(DATA_DIR, 'scheduled_broadcasts.json');
 let scheduledBroadcasts = new Map();
-const scheduledTimeouts = new Map(); // broadcastId â†’ timeout ID
+const scheduledTimeouts = new Map();
 
 function loadScheduledBroadcasts() {
   if (fs.existsSync(BROADCASTS_FILE)) {
@@ -64,41 +54,30 @@ function loadScheduledBroadcasts() {
         if (entry.status === 'pending') {
           const delay = entry.scheduledTime - Date.now();
           if (delay > 0) {
-            const timeoutId = setTimeout(() => {
-              executeScheduledBroadcast(entry.broadcastId);
-            }, delay);
+            const timeoutId = setTimeout(() => executeScheduledBroadcast(entry.broadcastId), delay);
             scheduledTimeouts.set(entry.broadcastId, timeoutId);
-            console.log('Re-scheduled broadcast ' + entry.broadcastId + ' in ' + Math.round(delay / 1000) + ' seconds');
           } else {
             executeScheduledBroadcast(entry.broadcastId);
           }
         }
       }
-      console.log('Loaded ' + scheduledBroadcasts.size + ' scheduled broadcasts from disk');
     } catch (err) {
-      console.error('Failed to load scheduled broadcasts:', err.message);
+      console.error('Failed to load broadcasts:', err.message);
     }
   }
 }
 
 function saveScheduledBroadcasts() {
   try {
-    const data = Array.from(scheduledBroadcasts.values());
-    fs.writeFileSync(BROADCASTS_FILE, JSON.stringify(data, null, 2));
+    fs.writeFileSync(BROADCASTS_FILE, JSON.stringify(Array.from(scheduledBroadcasts.values()), null, 2));
   } catch (err) {
-    console.error('Failed to save scheduled broadcasts:', err.message);
+    console.error('Failed to save broadcasts:', err.message);
   }
 }
 
 function executeScheduledBroadcast(broadcastId) {
   const task = scheduledBroadcasts.get(broadcastId);
-  if (!task || task.status !== 'pending') {
-    console.warn('[SCHEDULED] Task ' + broadcastId + ' not pending or not found');
-    return;
-  }
-
-  console.log('[SCHEDULED START] Executing broadcast ' + broadcastId + ' for user ' + task.userId + ' at ' + new Date().toISOString());
-  console.log('[SCHEDULED INFO] Message preview: "' + task.message.substring(0, 50) + '..."');
+  if (!task || task.status !== 'pending') return;
 
   const result = executeBroadcast(task.userId, task.message);
 
@@ -111,8 +90,6 @@ function executeScheduledBroadcast(broadcastId) {
   scheduledBroadcasts.set(broadcastId, task);
   scheduledTimeouts.delete(broadcastId);
   saveScheduledBroadcasts();
-
-  console.log('[SCHEDULED END] Broadcast ' + broadcastId + ' completed with status: ' + task.status);
 }
 
 function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
@@ -132,11 +109,8 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
 
   const delay = scheduledMs - Date.now();
   if (delay > 0) {
-    const timeoutId = setTimeout(() => {
-      executeScheduledBroadcast(broadcastId);
-    }, delay);
+    const timeoutId = setTimeout(() => executeScheduledBroadcast(broadcastId), delay);
     scheduledTimeouts.set(broadcastId, timeoutId);
-    console.log('Scheduled broadcast ' + broadcastId + ' in ' + Math.round(delay / 1000) + ' seconds');
   } else {
     executeScheduledBroadcast(broadcastId);
   }
@@ -145,122 +119,59 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   return broadcastId;
 }
 
-// ===================== BATCHED EXECUTE BROADCAST =====================
 async function executeBroadcast(userId, message) {
   const bot = activeBots.get(userId);
-  if (!bot || !bot.telegram) {
-    console.error('[BROADCAST ERROR] Bot not active for user ' + userId + ' at ' + new Date().toISOString());
-    return { sent: 0, failed: 0, error: 'Bot not connected at execution time' };
-  }
+  if (!bot || !bot.telegram) return { sent: 0, failed: 0, error: 'Bot not connected' };
 
-  console.log('[BROADCAST START] User ' + userId + ' - Bot active, preparing to send "' + message.substring(0, 50) + '..."');
+  const targets = (allSubmissions.get(userId) || []).filter(s => s.status === 'subscribed' && s.telegramChatId);
+  if (targets.length === 0) return { sent: 0, failed: 0, total: 0 };
 
-  const mySubs = allSubmissions.get(userId) || [];
-  const targets = mySubs.filter(s => s.status === 'subscribed' && s.telegramChatId);
-  console.log('[BROADCAST INFO] Found ' + targets.length + ' valid targets for user ' + userId);
-
-  if (targets.length === 0) {
-    return { sent: 0, failed: 0, total: 0 };
-  }
-
-  // Split into batches
   const batches = [];
   for (let i = 0; i < targets.length; i += BATCH_SIZE) {
     batches.push(targets.slice(i, i + BATCH_SIZE));
   }
-  console.log('[BROADCAST] Split into ' + batches.length + ' batches of max ' + BATCH_SIZE + ' messages');
 
-  let sent = 0;
-  let failed = 0;
+  let sent = 0, failed = 0;
   const failures = [];
 
-  // Process batches sequentially with delay
-  for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-    const batch = batches[batchIndex];
-    console.log('[BATCH ' + (batchIndex + 1) + '/' + batches.length + '] Sending ' + batch.length + ' messages');
-
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
     for (const sub of batch) {
-      const chatId = sub.telegramChatId;
       try {
-        await bot.telegram.sendMessage(chatId, message, { parse_mode: 'HTML' });
+        await bot.telegram.sendMessage(sub.telegramChatId, message, { parse_mode: 'HTML' });
         sent++;
-        console.log('[BROADCAST SUCCESS] Sent to ' + chatId + ' (' + (sub.name || 'unknown') + ')');
       } catch (err) {
         failed++;
-        const errorMsg = err.message || err.description || 'Unknown error';
-        console.error('[BROADCAST FAIL] To ' + chatId + ' (' + (sub.name || 'unknown') + '): ' + errorMsg);
-        failures.push({ chatId, error: errorMsg });
+        failures.push({ chatId: sub.telegramChatId, error: err.message || 'Unknown' });
       }
     }
-
-    // Wait for next batch (skip wait after last batch)
-    if (batchIndex < batches.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL_MS));
-    }
+    if (i < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_INTERVAL_MS));
   }
 
-  const summary = {
-    sent,
-    failed,
-    total: targets.length,
-    failures: failures.length > 0 ? failures : undefined
-  };
-
-  console.log('[BROADCAST SUMMARY] User ' + userId + ' - Sent: ' + sent + ', Failed: ' + failed + ', Total: ' + targets.length);
-  if (failures.length > 0) {
-    console.log('[BROADCAST SUMMARY] Failure details:', JSON.stringify(failures, null, 2));
-  }
-
-  return summary;
+  return { sent, failed, total: targets.length, failures: failures.length ? failures : undefined };
 }
 
-// Load on startup
+// Startup
 loadScheduledBroadcasts();
+users.forEach(user => { if (user.telegramBotToken) launchUserBot(user); });
+process.on('SIGTERM', () => { for (const t of scheduledTimeouts.values()) clearTimeout(t); scheduledTimeouts.clear(); });
 
-// Auto-relaunch all bots that have a token
-users.forEach(user => {
-  if (user.telegramBotToken) {
-    console.log('[STARTUP] Auto-relaunching bot for user ' + user.email);
-    launchUserBot(user);
-  }
-});
-
-// Cleanup timeouts on shutdown
-process.on('SIGTERM', () => {
-  for (const [id, timeout] of scheduledTimeouts.entries()) {
-    clearTimeout(timeout);
-  }
-  scheduledTimeouts.clear();
-  console.log('Cleared all scheduled timeouts on shutdown');
-});
-
-// ==================== TELEGRAM BOT & 2FA ====================
-function generate2FACode() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
+// Helpers
+function generate2FACode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
 
 async function send2FACodeViaBot(user, code) {
   if (!user.isTelegramConnected || !user.telegramChatId || !activeBots.has(user.id)) return false;
-  const bot = activeBots.get(user.id);
   try {
-    await bot.telegram.sendMessage(user.telegramChatId, `
-Security Alert â€“ Password Reset
-
-Your 6-digit code:
-
-<b>${code}</b>
-
-Valid for 10 minutes.
-    `.trim(), { parse_mode: 'HTML' });
+    await activeBots.get(user.id).telegram.sendMessage(user.telegramChatId,
+      'Security Alert – Password Reset\n\nYour 6-digit code:\n\n<b>' + code + '</b>\n\nValid for 10 minutes.', { parse_mode: 'HTML' });
     return true;
-  } catch (err) {
-    console.error('Failed to send 2FA code to ' + user.email + ':', err.message);
+  } catch {
     return false;
   }
 }
 
 function escapeHtml(unsafe) {
-  return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+  return unsafe.replace(/&/g, "&").replace(/</g, "<").replace(/>/g, ">").replace(/"/g, '"').replace(/'/g, "'");
 }
 
 function launchUserBot(user) {
@@ -279,52 +190,20 @@ function launchUserBot(user) {
       const sub = pendingSubscribers.get(payload);
       if (sub.userId === user.id) {
         let list = allSubmissions.get(user.id) || [];
+        const byChat = list.findIndex(e => e.telegramChatId === chatId);
+        const byContact = list.findIndex(e => e.contact === sub.contact);
 
-        const existingByChatIdIndex = list.findIndex(e => e.telegramChatId === chatId);
-        const existingByContactIndex = list.findIndex(e => e.contact === sub.contact);
-
-        if (existingByChatIdIndex !== -1) {
-          list[existingByChatIdIndex] = {
-            ...list[existingByChatIdIndex],
-            name: sub.name,
-            contact: sub.contact,
-            shortId: sub.shortId,
-            subscribedAt: new Date().toISOString(),
-            status: 'subscribed',
-          };
-        } else if (existingByContactIndex !== -1) {
-          list[existingByContactIndex] = {
-            ...list[existingByContactIndex],
-            name: sub.name,
-            telegramChatId: chatId,
-            shortId: sub.shortId,
-            subscribedAt: new Date().toISOString(),
-            status: 'subscribed',
-          };
+        if (byChat !== -1) {
+          list[byChat] = { ...list[byChat], name: sub.name, contact: sub.contact, shortId: sub.shortId, subscribedAt: new Date().toISOString(), status: 'subscribed' };
+        } else if (byContact !== -1) {
+          list[byContact] = { ...list[byContact], name: sub.name, telegramChatId: chatId, shortId: sub.shortId, subscribedAt: new Date().toISOString(), status: 'subscribed' };
         } else {
-          list.push({
-            name: sub.name,
-            contact: sub.contact,
-            telegramChatId: chatId,
-            shortId: sub.shortId,
-            submittedAt: new Date().toISOString(),
-            subscribedAt: new Date().toISOString(),
-            status: 'subscribed'
-          });
+          list.push({ name: sub.name, contact: sub.contact, telegramChatId: chatId, shortId: sub.shortId, submittedAt: new Date().toISOString(), subscribedAt: new Date().toISOString(), status: 'subscribed' });
         }
 
         allSubmissions.set(user.id, list);
         pendingSubscribers.delete(payload);
-
-        await ctx.replyWithHTML(`
-<b>âœ… Subscription Confirmed!</b>
-
-Hi <b>${escapeHtml(sub.name)}</b>!
-
-You're now fully subscribed and will receive exclusive updates here.
-
-Thank you â¤ï¸
-        `);
+        await ctx.replyWithHTML('<b>✅ Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you ❤️');
         return;
       }
     }
@@ -332,35 +211,18 @@ Thank you â¤ï¸
     if (payload === user.id) {
       user.telegramChatId = chatId;
       user.isTelegramConnected = true;
-      await ctx.replyWithHTML(`
-<b>Sendm 2FA Connected Successfully! ðŸ”</b>
-
-You will now receive login & recovery codes here.
-
-<i>Keep this chat private â€¢ Never share your bot link</i>
-      `);
+      await ctx.replyWithHTML('<b>Sendm 2FA Connected Successfully! 🔐</b>\n\nYou will receive login codes here.');
       return;
     }
 
-    await ctx.replyWithHTML(`
-<b>Welcome!</b>
-
-Subscribe from the page to get updates.
-    `);
+    await ctx.replyWithHTML('<b>Welcome!</b>\n\nSubscribe from the page to get updates.');
   });
 
-  bot.command('status', (ctx) => {
-    ctx.replyWithHTML(`
-<b>Sendm 2FA Status</b>
-Account: <code>${user.email}</code>
-Status: <b>${user.isTelegramConnected ? 'Connected' : 'Not Connected'}</b>
-    `);
-  });
+  bot.command('status', ctx => ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>'));
 
-  bot.catch((err) => console.error('Bot error [' + user.email + ']:', err));
+  bot.catch(err => console.error('Bot error [' + user.email + ']:', err));
   bot.launch();
   activeBots.set(user.id, bot);
-  console.log('[BOT] Launched bot for user ' + user.email);
 }
 
 setInterval(() => {
@@ -370,29 +232,27 @@ setInterval(() => {
   }
 }, 60 * 60 * 1000);
 
-// ==================== JWT MIDDLEWARE ====================
+// JWT Middleware
 const authenticateToken = (req, res, next) => {
   const token = req.headers.authorization ? req.headers.authorization.split(' ')[1] : req.query.token;
   if (!token) return res.status(401).json({ error: 'Access token required' });
-
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ error: 'Invalid or expired token' });
+    if (err) return res.status(403).json({ error: 'Invalid token' });
     req.user = decoded;
     next();
   });
 };
 
-// ==================== AUTH ROUTES ====================
+// Auth Routes (10 routes)
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { fullName, email, password } = req.body;
   if (!fullName || !email || !password) return res.status(400).json({ error: 'All fields required' });
-  if (password.length < 6) return res.status(400).json({ error: 'Password too short' });
   if (users.find(u => u.email === email.toLowerCase())) return res.status(409).json({ error: 'Email already exists' });
 
   const hashed = await bcrypt.hash(password, 12);
   const newUser = {
     id: uuidv4(),
-    fullName: fullName,
+    fullName,
     email: email.toLowerCase(),
     password: hashed,
     createdAt: new Date().toISOString(),
@@ -401,15 +261,10 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     isTelegramConnected: false,
     botUsername: null
   };
-
   users.push(newUser);
   const token = jwt.sign({ userId: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '7d' });
 
-  res.status(201).json({
-    success: true,
-    token: token,
-    user: { id: newUser.id, fullName: newUser.fullName, email: newUser.email, isTelegramConnected: false }
-  });
+  res.status(201).json({ success: true, token, user: { id: newUser.id, fullName, email: newUser.email, isTelegramConnected: false } });
 });
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
@@ -418,12 +273,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: 'Invalid credentials' });
 
   const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-
-  res.json({
-    success: true,
-    token: token,
-    user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected }
-  });
+  res.json({ success: true, token, user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected } });
 });
 
 app.get('/api/auth/me', authenticateToken, (req, res) => {
@@ -441,14 +291,10 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   try {
-    if (activeBots.has(user.id)) {
-      activeBots.get(user.id).stop();
-      activeBots.delete(user.id);
-    }
+    if (activeBots.has(user.id)) { activeBots.get(user.id).stop(); activeBots.delete(user.id); }
 
     const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
     const data = await response.json();
-
     if (!data.ok || !data.result || !data.result.username) return res.status(400).json({ error: 'Invalid bot token' });
 
     const botUsername = data.result.username.replace(/^@/, '');
@@ -459,10 +305,9 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
     launchUserBot(user);
 
     const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
-
-    res.json({ success: true, message: 'Bot connected!', botUsername: '@' + botUsername, startLink: startLink });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to connect to Telegram' });
+    res.json({ success: true, message: 'Bot connected!', botUsername: '@' + botUsername, startLink });
+  } catch {
+    res.status(500).json({ error: 'Failed to connect' });
   }
 });
 
@@ -475,14 +320,10 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   try {
-    if (activeBots.has(user.id)) {
-      activeBots.get(user.id).stop();
-      activeBots.delete(user.id);
-    }
+    if (activeBots.has(user.id)) { activeBots.get(user.id).stop(); activeBots.delete(user.id); }
 
     const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
     const data = await response.json();
-
     if (!data.ok || !data.result || !data.result.username) return res.status(400).json({ error: 'Invalid bot token' });
 
     const botUsername = data.result.username.replace(/^@/, '');
@@ -493,9 +334,8 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
     launchUserBot(user);
 
     const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
-
-    res.json({ success: true, message: 'Bot token updated!', botUsername: '@' + botUsername, startLink: startLink });
-  } catch (err) {
+    res.json({ success: true, message: 'Bot token updated!', botUsername: '@' + botUsername, startLink });
+  } catch {
     res.status(500).json({ error: 'Failed to validate token' });
   }
 });
@@ -504,10 +344,7 @@ app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
   const user = users.find(u => u.id === req.user.userId);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  if (activeBots.has(user.id)) {
-    activeBots.get(user.id).stop();
-    activeBots.delete(user.id);
-  }
+  if (activeBots.has(user.id)) { activeBots.get(user.id).stop(); activeBots.delete(user.id); }
 
   user.telegramBotToken = null;
   user.botUsername = null;
@@ -529,18 +366,15 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
   const user = users.find(u => u.email === email.toLowerCase());
   if (!user) return res.json({ success: true, message: 'If account exists, code was sent.' });
-
   if (!user.isTelegramConnected) return res.status(400).json({ error: 'Telegram 2FA not connected' });
 
   const code = generate2FACode();
   const resetToken = uuidv4();
-  const expiresAt = Date.now() + 10 * 60 * 1000;
-
-  resetTokens.set(resetToken, { userId: user.id, code: code, expiresAt: expiresAt });
+  resetTokens.set(resetToken, { userId: user.id, code, expiresAt: Date.now() + 10 * 60 * 1000 });
   const sent = await send2FACodeViaBot(user, code);
   if (!sent) return res.status(500).json({ error: 'Failed to send code' });
 
-  res.json({ success: true, message: 'Code sent!', resetToken: resetToken });
+  res.json({ success: true, message: 'Code sent!', resetToken });
 });
 
 app.post('/api/auth/verify-reset-code', (req, res) => {
@@ -552,7 +386,6 @@ app.post('/api/auth/verify-reset-code', (req, res) => {
     resetTokens.delete(resetToken);
     return res.status(400).json({ error: 'Invalid or expired code' });
   }
-
   if (entry.code !== code.trim()) return res.status(400).json({ error: 'Wrong code' });
 
   res.json({ success: true, message: 'Verified', userId: entry.userId });
@@ -573,22 +406,15 @@ app.post('/api/auth/reset-password', async (req, res) => {
 
   user.password = await bcrypt.hash(newPassword, 12);
   resetTokens.delete(resetToken);
-
   res.json({ success: true, message: 'Password reset successful' });
 });
 
-// ==================== PAGES & FORMS ROUTES ====================
+// Pages Routes
 app.get('/api/pages', authenticateToken, (req, res) => {
-  const userPages = Array.from(landingPages.entries())
-    .filter(([_, page]) => page.userId === req.user.userId)
-    .map(([shortId, page]) => ({
-      shortId: shortId,
-      title: page.title,
-      createdAt: page.createdAt,
-      updatedAt: page.updatedAt,
-      url: req.protocol + '://' + req.get('host') + '/p/' + shortId
-    }));
-  res.json({ pages: userPages });
+  const pages = Array.from(landingPages.entries())
+    .filter(([_, p]) => p.userId === req.user.userId)
+    .map(([shortId, p]) => ({ shortId, title: p.title, createdAt: p.createdAt, updatedAt: p.updatedAt, url: req.protocol + '://' + req.get('host') + '/p/' + shortId }));
+  res.json({ pages });
 });
 
 app.post('/api/pages/save', authenticateToken, (req, res) => {
@@ -598,54 +424,42 @@ app.post('/api/pages/save', authenticateToken, (req, res) => {
   const finalShortId = shortId || uuidv4().slice(0, 8);
   const now = new Date().toISOString();
 
-  const cleanBlocks = config.blocks
-    .map(block => {
-      if (block.isEditor || (block.id && (block.id.includes('editor-') || block.id.includes('control-')))) return null;
+  const cleanBlocks = config.blocks.map(b => {
+    if (b.isEditor || (b.id && (b.id.includes('editor-') || b.id.includes('control-')))) return null;
+    if (b.type === 'text') {
+      const content = (b.content || '').trim();
+      if (!content) return null;
+      return { type: 'text', tag: b.tag || 'p', content };
+    }
+    if (b.type === 'image') {
+      const src = b.src ? b.src.trim() : '';
+      if (!src) return null;
+      return { type: 'image', src };
+    }
+    if (b.type === 'button') {
+      const text = (b.text || '').trim();
+      if (!text) return null;
+      return { type: 'button', text, href: b.href || '' };
+    }
+    if (b.type === 'form') {
+      const html = b.html ? b.html.trim() : '';
+      if (!html) return null;
+      return { type: 'form', html: html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '') };
+    }
+    return null;
+  }).filter(Boolean);
 
-      if (block.type === 'text') {
-        const content = (block.content || '').trim();
-        if (!content || content === 'New text' || content.length < 1) return null;
-        return { type: 'text', tag: block.tag || 'p', content: content };
-      }
-
-      if (block.type === 'image') {
-        const src = block.src ? block.src.trim() : '';
-        if (!src || (src.startsWith('data:image/') && src.length < 100)) return null;
-        return { type: 'image', src: src };
-      }
-
-      if (block.type === 'button') {
-        const text = (block.text || '').trim();
-        const lowerText = text.toLowerCase();
-        if (!text || text.length < 3 || lowerText === 'x' || lowerText.includes('add ') || lowerText.includes('delete') || lowerText.includes('remove') || lowerText.includes('close')) return null;
-        return { type: 'button', text: text, href: block.href === '#' ? '' : (block.href || '') };
-      }
-
-      if (block.type === 'form') {
-        const html = block.html ? block.html.trim() : '';
-        if (!html || html.length < 10) return null;
-        return { type: 'form', html: html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '') };
-      }
-
-      return null;
-    })
-    .filter(Boolean);
-
-  if (cleanBlocks.length === 0) return res.status(400).json({ error: 'No valid content blocks found.' });
+  if (cleanBlocks.length === 0) return res.status(400).json({ error: 'No valid blocks' });
 
   landingPages.set(finalShortId, {
     userId: req.user.userId,
     title: title.trim(),
     config: { blocks: cleanBlocks },
-    createdAt: landingPages.get(finalShortId) ? landingPages.get(finalShortId).createdAt : now,
+    createdAt: landingPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
 
-  res.json({
-    success: true,
-    shortId: finalShortId,
-    url: req.protocol + '://' + req.get('host') + '/p/' + finalShortId
-  });
+  res.json({ success: true, shortId: finalShortId, url: req.protocol + '://' + req.get('host') + '/p/' + finalShortId });
 });
 
 app.post('/api/pages/delete', authenticateToken, (req, res) => {
@@ -662,29 +476,18 @@ app.get('/p/:shortId', (req, res) => {
   res.render('landing', { title: page.title, blocks: page.config.blocks });
 });
 
-app.get('/api/forms', authenticateToken, (req, res) => {
-  const userForms = Array.from(formPages.entries())
-    .filter(([_, form]) => form.userId === req.user.userId)
-    .map(([shortId, formData]) => ({
-      shortId: shortId,
-      title: formData.title,
-      createdAt: formData.createdAt,
-      updatedAt: formData.updatedAt,
-      url: req.protocol + '://' + req.get('host') + '/f/' + shortId
-    }));
-  res.json({ forms: userForms });
-});
-
-app.get('/api/form/:shortId', (req, res) => {
-  const formData = formPages.get(req.params.shortId);
-  if (!formData) return res.status(404).json({ error: 'Form not found' });
-  res.json({ shortId: req.params.shortId, title: formData.title, state: formData.state });
-});
-
-app.get('/api/page/:shortId', (req, res) => {
+app.get('/api/page/:shortId', authenticateToken, (req, res) => {
   const page = landingPages.get(req.params.shortId);
-  if (!page) return res.status(404).json({ error: 'Page not found' });
+  if (!page || page.userId !== req.user.userId) return res.status(404).json({ error: 'Page not found' });
   res.json({ shortId: req.params.shortId, title: page.title, config: page.config });
+});
+
+// Forms Routes
+app.get('/api/forms', authenticateToken, (req, res) => {
+  const forms = Array.from(formPages.entries())
+    .filter(([_, f]) => f.userId === req.user.userId)
+    .map(([shortId, f]) => ({ shortId, title: f.title, createdAt: f.createdAt, updatedAt: f.updatedAt, url: req.protocol + '://' + req.get('host') + '/f/' + shortId }));
+  res.json({ forms });
 });
 
 app.post('/api/forms/save', authenticateToken, (req, res) => {
@@ -703,199 +506,189 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
     userId: req.user.userId,
     title: title.trim(),
     state: sanitizedState,
-    createdAt: formPages.get(finalShortId) ? formPages.get(finalShortId).createdAt : now,
+    createdAt: formPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
 
-  res.json({
-    success: true,
-    shortId: finalShortId,
-    url: req.protocol + '://' + req.get('host') + '/f/' + finalShortId
-  });
+  res.json({ success: true, shortId: finalShortId, url: req.protocol + '://' + req.get('host') + '/f/' + finalShortId });
 });
 
 app.post('/api/forms/delete', authenticateToken, (req, res) => {
   const { shortId } = req.body;
-  const formData = formPages.get(shortId);
-  if (!formData || formData.userId !== req.user.userId) return res.status(404).json({ error: 'Form not found' });
+  const form = formPages.get(shortId);
+  if (!form || form.userId !== req.user.userId) return res.status(404).json({ error: 'Form not found' });
   formPages.delete(shortId);
   res.json({ success: true });
 });
 
 app.get('/f/:shortId', (req, res) => {
-  const formData = formPages.get(req.params.shortId);
-  if (!formData) return res.status(404).render('404');
-  res.render('form', { title: formData.title, state: formData.state });
+  const form = formPages.get(req.params.shortId);
+  if (!form) return res.status(404).render('404');
+  res.render('form', { title: form.title, state: form.state });
 });
 
-// ==================== SUBSCRIPTION & CONTACTS ====================
+app.get('/api/form/:shortId', authenticateToken, (req, res) => {
+  const form = formPages.get(req.params.shortId);
+  if (!form || form.userId !== req.user.userId) return res.status(404).json({ error: 'Form not found' });
+  res.json({ shortId: req.params.shortId, title: form.title, state: form.state });
+});
+
+// Subscription & Contacts
 app.post('/api/subscribe/:shortId', async (req, res) => {
   const { shortId } = req.params;
   const { name, email } = req.body;
-
   if (!name || !name.trim() || !email || !email.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
 
   const page = formPages.get(shortId);
   if (!page) return res.status(404).json({ error: 'Page not found' });
 
   const owner = users.find(u => u.id === page.userId);
-  if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Broadcast bot not connected' });
+  if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Bot not connected' });
 
   const contactValue = email.trim();
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
   let list = allSubmissions.get(owner.id) || [];
+  const existingIndex = list.findIndex(c => c.contact === contactValue);
 
-  const existingByContactIndex = list.findIndex(c => c.contact === contactValue);
+  const base = { name: name.trim(), contact: contactValue, shortId, submittedAt: new Date().toISOString() };
 
-  const newEntry = {
-    name: name.trim(),
-    contact: contactValue,
-    telegramChatId: null,
-    shortId: shortId,
-    submittedAt: new Date().toISOString(),
-    subscribedAt: null,
-    status: 'pending'
-  };
-
-  if (existingByContactIndex !== -1) {
-    list[existingByContactIndex] = {
-      ...list[existingByContactIndex],
-      name: newEntry.name,
-      contact: newEntry.contact,
-      submittedAt: newEntry.submittedAt,
-    };
+  if (existingIndex !== -1) {
+    const existing = list[existingIndex];
+    list[existingIndex] = { ...existing, ...base };
   } else {
-    list.push(newEntry);
+    list.push({ ...base, telegramChatId: null, subscribedAt: null, status: 'pending' });
   }
 
   allSubmissions.set(owner.id, list);
 
   pendingSubscribers.set(payload, {
     userId: owner.id,
-    shortId: shortId,
+    shortId,
     name: name.trim(),
     contact: contactValue,
     createdAt: Date.now()
   });
 
   const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
-  res.json({ success: true, deepLink: deepLink });
+  res.json({ success: true, deepLink });
 });
 
 app.get('/api/contacts', authenticateToken, (req, res) => {
-  const userId = req.user.userId;
-  const allContacts = allSubmissions.get(userId) || [];
-
-  allContacts.sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
-
-  const contacts = allContacts.map(c => ({
+  const contacts = (allSubmissions.get(req.user.userId) || []).map(c => ({
     name: c.name,
     contact: c.contact,
     status: c.status,
-    statusLabel: c.status === 'subscribed' ? 'Subscribed âœ…' : 'Pending â³',
     telegramChatId: c.telegramChatId || null,
     pageId: c.shortId,
-    pageUrl: req.protocol + '://' + req.get('host') + '/f/' + c.shortId,
     submittedAt: new Date(c.submittedAt).toLocaleString(),
     subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
   }));
-
-  const stats = {
-    total: allContacts.length,
-    subscribed: allContacts.filter(c => c.status === 'subscribed').length,
-    pending: allContacts.filter(c => c.status === 'pending').length,
-    subscribedPercentage: allContacts.length > 0 ? Math.round((allContacts.filter(c => c.status === 'subscribed').length / allContacts.length) * 100) : 0
-  };
-
-  res.json({ success: true, contacts: contacts, stats: stats });
+  res.json({ success: true, contacts });
 });
 
 app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   const { contacts } = req.body;
-  if (!Array.isArray(contacts) || contacts.length === 0) {
-    return res.status(400).json({ error: 'Provide an array of contact values to delete' });
-  }
+  if (!Array.isArray(contacts) || !contacts.length) return res.status(400).json({ error: 'Provide contact array' });
 
   const userId = req.user.userId;
   let list = allSubmissions.get(userId) || [];
-
-  const initialLength = list.length;
+  const initial = list.length;
   list = list.filter(c => !contacts.includes(c.contact));
-
   allSubmissions.set(userId, list);
 
-  const deletedCount = initialLength - list.length;
-
-  res.json({
-    success: true,
-    deletedCount: deletedCount,
-    remaining: list.length
-  });
+  res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
 });
 
+// Broadcast Routes
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message, recipients = 'all' } = req.body;
-
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
-  const userId = req.user.userId;
-  const result = await executeBroadcast(userId, message);
-
-  res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total });
+  const result = await executeBroadcast(req.user.userId, message);
+  res.json({ success: true, ...result });
 });
 
-app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
+app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
-
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
   const userId = req.user.userId;
 
   if (scheduledTime === 'now') {
-    const result = await executeBroadcast(userId, message);
-    return res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total, immediate: true });
+    return executeBroadcast(userId, message).then(result => res.json({ success: true, ...result, immediate: true }));
   }
 
-  if (!scheduledTime || isNaN(new Date(scheduledTime).getTime())) {
-    return res.status(400).json({ error: 'Valid future datetime or "now" required' });
-  }
+  const time = new Date(scheduledTime);
+  if (isNaN(time.getTime()) || time <= new Date()) return res.status(400).json({ error: 'Invalid future time' });
 
-  const scheduled = new Date(scheduledTime);
-  if (scheduled <= new Date()) {
-    return res.status(400).json({ error: 'Schedule time must be in the future' });
-  }
-
-  const broadcastId = scheduleBroadcast(userId, message, recipients, scheduledTime);
-
-  res.json({
-    success: true,
-    message: 'Broadcast scheduled!',
-    broadcastId: broadcastId,
-    scheduledTime: scheduled.toISOString(),
-    recipients: recipients
-  });
+  const id = scheduleBroadcast(userId, message, recipients, scheduledTime);
+  res.json({ success: true, broadcastId: id, scheduledTime: time.toISOString() });
 });
 
 app.get('/api/broadcast/scheduled', authenticateToken, (req, res) => {
-  const userId = req.user.userId;
   const scheduled = Array.from(scheduledBroadcasts.values())
-    .filter(t => t.userId === userId)
+    .filter(t => t.userId === req.user.userId)
     .map(t => ({
       broadcastId: t.broadcastId,
       message: t.message.substring(0, 100) + (t.message.length > 100 ? '...' : ''),
       scheduledTime: new Date(t.scheduledTime).toISOString(),
       status: t.status,
       executedAt: t.executedAt || null,
-      result: t.result || null,
-      recipients: t.recipients
+      recipients: t.recipients,
+      isEditable: t.status === 'pending'
     }))
     .sort((a, b) => new Date(b.scheduledTime) - new Date(a.scheduledTime));
-
-  res.json({ success: true, scheduled: scheduled });
+  res.json({ success: true, scheduled });
 });
 
-// ==================== VIEWS ====================
+app.delete('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res) => {
+  const { broadcastId } = req.params;
+  const task = scheduledBroadcasts.get(broadcastId);
+  if (!task || task.userId !== req.user.userId) return res.status(404).json({ error: 'Not found' });
+
+  if (scheduledTimeouts.has(broadcastId)) {
+    clearTimeout(scheduledTimeouts.get(broadcastId));
+    scheduledTimeouts.delete(broadcastId);
+  }
+  scheduledBroadcasts.delete(broadcastId);
+  saveScheduledBroadcasts();
+  res.json({ success: true });
+});
+
+app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res) => {
+  const { broadcastId } = req.params;
+  const { message, scheduledTime, recipients } = req.body;
+  const task = scheduledBroadcasts.get(broadcastId);
+  if (!task || task.userId !== req.user.userId || task.status !== 'pending') return res.status(400).json({ error: 'Cannot edit' });
+
+  if (scheduledTimeouts.has(broadcastId)) {
+    clearTimeout(scheduledTimeouts.get(broadcastId));
+    scheduledTimeouts.delete(broadcastId);
+  }
+
+  if (message && message.trim()) task.message = message.trim();
+  if (recipients) task.recipients = recipients;
+
+  if (scheduledTime) {
+    const newTime = new Date(scheduledTime);
+    if (isNaN(newTime.getTime()) || newTime <= new Date()) return res.status(400).json({ error: 'Invalid future time' });
+    task.scheduledTime = newTime.getTime();
+  }
+
+  const delay = task.scheduledTime - Date.now();
+  if (delay > 0) {
+    scheduledTimeouts.set(broadcastId, setTimeout(() => executeScheduledBroadcast(broadcastId), delay));
+  } else {
+    executeScheduledBroadcast(broadcastId);
+  }
+
+  scheduledBroadcasts.set(broadcastId, task);
+  saveScheduledBroadcasts();
+  res.json({ success: true, broadcastId, scheduledTime: new Date(task.scheduledTime).toISOString() });
+});
+
+// Views - Write EJS files at startup
 const viewsDir = path.join(__dirname, 'views');
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
 if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
@@ -939,8 +732,8 @@ const landingEjs = `<!DOCTYPE html>
 <% }) %>
     </div>
     <div class="footer">
-      Â© <%= new Date().getFullYear() %> Sendm<br>
-      <a href="#" style="color:var(--primary);text-decoration:none;">Unsubscribe</a> â€¢ <a href="#" style="color:var(--primary);text-decoration:none;">Privacy</a>
+      © <%= new Date().getFullYear() %> Sendm<br>
+      <a href="#" style="color:var(--primary);text-decoration:none;">Unsubscribe</a> • <a href="#" style="color:var(--primary);text-decoration:none;">Privacy</a>
     </div>
   </div>
 </body>
@@ -969,7 +762,7 @@ const formEjs = `<!DOCTYPE html>
 <body>
   <div class="form-container">
     <div id="form-content"></div>
-    <div class="footer">Â© <%= new Date().getFullYear() %> Sendm</div>
+    <div class="footer">© <%= new Date().getFullYear() %> Sendm</div>
   </div>
 
   <script>
@@ -1066,11 +859,5 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER â€” BATCHED QUEUING + STRING CONCATENATION');
-  console.log('http://localhost:' + PORT);
-  console.log('âœ“ Broadcasts persistent across restarts');
-  console.log('âœ“ Immediate & scheduled broadcasts with batch queuing (25 msg / 15s)');
-  console.log('âœ“ All links use string concatenation');
-  console.log('âœ“ Detailed failure logging');
-  console.log('âœ“ All routes complete and functional\n');
+  console.log('Server running on http://localhost:' + PORT);
 });
