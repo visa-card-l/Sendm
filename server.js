@@ -1,4 +1,7 @@
-// server.js — FIXED: Editor loading works like original (no auth on fetch config/state)
+// server.js — FULL UPDATED VERSION with sanitization for broadcast messages
+// All links use string concatenation
+// All routes and existing logic preserved
+// Broadcast messages sanitized for Telegram HTML
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -44,6 +47,57 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 const BROADCASTS_FILE = path.join(DATA_DIR, 'scheduled_broadcasts.json');
 let scheduledBroadcasts = new Map();
 const scheduledTimeouts = new Map();
+
+// Telegram HTML sanitizer for broadcast messages
+function sanitizeTelegramHtml(unsafe) {
+  if (!unsafe || typeof unsafe !== 'string') return '';
+
+  const allowedTags = new Set([
+    'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'span',
+    'tg-spoiler', 'a', 'code', 'pre', 'tg-emoji'
+  ]);
+
+  const allowedAttrs = {
+    a: ['href'],
+    'tg-emoji': ['emoji-id']
+  };
+
+  // Remove dangerous elements
+  let clean = unsafe
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    .replace(/on\w+="[^"]*"/gi, '')
+    .replace(/javascript:/gi, '');
+
+  // Filter tags and attributes
+  clean = clean.replace(/<\/?([a-z][a-z0-9]*)\b[^>]*>/gi, (match, tagName) => {
+    const tag = tagName.toLowerCase();
+    if (!allowedTags.has(tag)) return '';
+
+    if (match.startsWith('</')) return '</' + tag + '>';
+
+    let attrs = '';
+    const attrRegex = /([a-z0-9-]+)="([^"]*)"/gi;
+    let attrMatch;
+    while ((attrMatch = attrRegex.exec(match)) !== null) {
+      const attrName = attrMatch[1].toLowerCase();
+      let attrValue = attrMatch[2];
+
+      if (allowedAttrs[tag] && allowedAttrs[tag].includes(attrName)) {
+        if (attrName === 'href') {
+          if (!/^https?:\/\//i.test(attrValue) && !attrValue.startsWith('/')) {
+            attrValue = '#';
+          }
+        }
+        attrs += ' ' + attrName + '="' + attrValue.replace(/"/g, '&quot;') + '"';
+      }
+    }
+
+    return '<' + tag + attrs + '>';
+  });
+
+  return clean.trim();
+}
 
 function loadScheduledBroadcasts() {
   if (fs.existsSync(BROADCASTS_FILE)) {
@@ -123,6 +177,8 @@ async function executeBroadcast(userId, message) {
   const bot = activeBots.get(userId);
   if (!bot || !bot.telegram) return { sent: 0, failed: 0, error: 'Bot not connected' };
 
+  const sanitizedMessage = sanitizeTelegramHtml(message);
+
   const targets = (allSubmissions.get(userId) || []).filter(s => s.status === 'subscribed' && s.telegramChatId);
   if (targets.length === 0) return { sent: 0, failed: 0, total: 0 };
 
@@ -138,7 +194,7 @@ async function executeBroadcast(userId, message) {
     const batch = batches[i];
     for (const sub of batch) {
       try {
-        await bot.telegram.sendMessage(sub.telegramChatId, message, { parse_mode: 'HTML' });
+        await bot.telegram.sendMessage(sub.telegramChatId, sanitizedMessage, { parse_mode: 'HTML' });
         sent++;
       } catch (err) {
         failed++;
@@ -156,7 +212,7 @@ loadScheduledBroadcasts();
 users.forEach(user => { if (user.telegramBotToken) launchUserBot(user); });
 process.on('SIGTERM', () => { for (const t of scheduledTimeouts.values()) clearTimeout(t); scheduledTimeouts.clear(); });
 
-// Helpers (unchanged)
+// Helpers
 function generate2FACode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
 
 async function send2FACodeViaBot(user, code) {
@@ -243,7 +299,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Auth Routes (10 routes)
+// Auth Routes
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { fullName, email, password } = req.body;
   if (!fullName || !email || !password) return res.status(400).json({ error: 'All fields required' });
@@ -476,7 +532,7 @@ app.get('/p/:shortId', (req, res) => {
   res.render('landing', { title: page.title, blocks: page.config.blocks });
 });
 
-// Editor fetch (NO auth - mirrors working code)
+// Editor fetch (NO auth)
 app.get('/api/page/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
   if (!page) return res.status(404).json({ error: 'Page not found' });
@@ -528,14 +584,14 @@ app.get('/f/:shortId', (req, res) => {
   res.render('form', { title: form.title, state: form.state });
 });
 
-// Editor fetch (NO auth - mirrors working code)
+// Editor fetch (NO auth)
 app.get('/api/form/:shortId', (req, res) => {
   const form = formPages.get(req.params.shortId);
   if (!form) return res.status(404).json({ error: 'Form not found' });
   res.json({ shortId: req.params.shortId, title: form.title, state: form.state });
 });
 
-// Subscription & Contacts (unchanged)
+// Subscription & Contacts
 app.post('/api/subscribe/:shortId', async (req, res) => {
   const { shortId } = req.params;
   const { name, email } = req.body;
@@ -602,12 +658,14 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
 });
 
-// Broadcast Routes (unchanged)
+// Broadcast Routes - SANITIZED
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
-  const result = await executeBroadcast(req.user.userId, message);
+  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
+
+  const result = await executeBroadcast(req.user.userId, sanitizedMessage);
   res.json({ success: true, ...result });
 });
 
@@ -615,16 +673,18 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
+  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
   const userId = req.user.userId;
 
   if (scheduledTime === 'now') {
-    return executeBroadcast(userId, message).then(result => res.json({ success: true, ...result, immediate: true }));
+    return executeBroadcast(userId, sanitizedMessage)
+      .then(result => res.json({ success: true, ...result, immediate: true }));
   }
 
   const time = new Date(scheduledTime);
   if (isNaN(time.getTime()) || time <= new Date()) return res.status(400).json({ error: 'Invalid future time' });
 
-  const id = scheduleBroadcast(userId, message, recipients, scheduledTime);
+  const id = scheduleBroadcast(userId, sanitizedMessage, recipients, scheduledTime);
   res.json({ success: true, broadcastId: id, scheduledTime: time.toISOString() });
 });
 
@@ -669,7 +729,9 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res)
     scheduledTimeouts.delete(broadcastId);
   }
 
-  if (message && message.trim()) task.message = message.trim();
+  if (message && message.trim()) {
+    task.message = sanitizeTelegramHtml(message.trim());
+  }
   if (recipients) task.recipients = recipients;
 
   if (scheduledTime) {
@@ -690,7 +752,7 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res)
   res.json({ success: true, broadcastId, scheduledTime: new Date(task.scheduledTime).toISOString() });
 });
 
-// Views - Write EJS files
+// EJS Templates
 const viewsDir = path.join(__dirname, 'views');
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
 if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
@@ -864,5 +926,5 @@ app.listen(PORT, () => {
   console.log('\nSENDEM SERVER — EDITOR LOADING FIXED');
   console.log('http://localhost:' + PORT);
   console.log('✓ Config fetch for editing now works (no auth on /api/page/:shortId and /api/form/:shortId)');
-  console.log('✓ All other protected routes intact\n');
+  console.log('✓ Broadcast messages sanitized for Telegram HTML\n');
 });
