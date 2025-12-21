@@ -1,7 +1,5 @@
-// server.js — FULL UPDATED VERSION with sanitization for broadcast messages
-// All links use string concatenation
-// All routes and existing logic preserved
-// Broadcast messages sanitized for Telegram HTML
+// server.js — FULL VERSION with message splitting for long broadcasts
+// Broadcast messages are sanitized and split into chunks if too long
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -39,6 +37,7 @@ const pendingSubscribers = new Map();
 // Broadcast config
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 15000;
+const MAX_MSG_LENGTH = 3900; // Safe under Telegram's 4096 char limit with HTML
 
 // Persistence
 const DATA_DIR = path.join(__dirname, 'data');
@@ -62,14 +61,12 @@ function sanitizeTelegramHtml(unsafe) {
     'tg-emoji': ['emoji-id']
   };
 
-  // Remove dangerous elements
   let clean = unsafe
     .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
     .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
     .replace(/on\w+="[^"]*"/gi, '')
     .replace(/javascript:/gi, '');
 
-  // Filter tags and attributes
   clean = clean.replace(/<\/?([a-z][a-z0-9]*)\b[^>]*>/gi, (match, tagName) => {
     const tag = tagName.toLowerCase();
     if (!allowedTags.has(tag)) return '';
@@ -182,6 +179,28 @@ async function executeBroadcast(userId, message) {
   const targets = (allSubmissions.get(userId) || []).filter(s => s.status === 'subscribed' && s.telegramChatId);
   if (targets.length === 0) return { sent: 0, failed: 0, total: 0 };
 
+  // Split long messages into chunks
+  const messageChunks = [];
+  let currentChunk = '';
+  const lines = sanitizedMessage.split('\n');
+
+  for (const line of lines) {
+    if (currentChunk.length + line.length + 1 > MAX_MSG_LENGTH) {
+      if (currentChunk) messageChunks.push(currentChunk.trim());
+      currentChunk = line;
+    } else {
+      currentChunk += (currentChunk ? '\n' : '') + line;
+    }
+  }
+  if (currentChunk) messageChunks.push(currentChunk.trim());
+
+  // Add numbering if multiple chunks
+  const numberedChunks = messageChunks.map((chunk, index) => {
+    return messageChunks.length > 1
+      ? `(\( {index + 1}/ \){messageChunks.length})\n\n${chunk}`
+      : chunk;
+  });
+
   const batches = [];
   for (let i = 0; i < targets.length; i += BATCH_SIZE) {
     batches.push(targets.slice(i, i + BATCH_SIZE));
@@ -194,7 +213,9 @@ async function executeBroadcast(userId, message) {
     const batch = batches[i];
     for (const sub of batch) {
       try {
-        await bot.telegram.sendMessage(sub.telegramChatId, sanitizedMessage, { parse_mode: 'HTML' });
+        for (const chunk of numberedChunks) {
+          await bot.telegram.sendMessage(sub.telegramChatId, chunk, { parse_mode: 'HTML' });
+        }
         sent++;
       } catch (err) {
         failed++;
@@ -532,7 +553,6 @@ app.get('/p/:shortId', (req, res) => {
   res.render('landing', { title: page.title, blocks: page.config.blocks });
 });
 
-// Editor fetch (NO auth)
 app.get('/api/page/:shortId', (req, res) => {
   const page = landingPages.get(req.params.shortId);
   if (!page) return res.status(404).json({ error: 'Page not found' });
@@ -584,7 +604,6 @@ app.get('/f/:shortId', (req, res) => {
   res.render('form', { title: form.title, state: form.state });
 });
 
-// Editor fetch (NO auth)
 app.get('/api/form/:shortId', (req, res) => {
   const form = formPages.get(req.params.shortId);
   if (!form) return res.status(404).json({ error: 'Form not found' });
@@ -658,7 +677,7 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
 });
 
-// Broadcast Routes - SANITIZED
+// Broadcast Routes
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
@@ -923,8 +942,8 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — EDITOR LOADING FIXED');
+  console.log('\nSENDEM SERVER — LONG MESSAGES FIXED');
   console.log('http://localhost:' + PORT);
-  console.log('✓ Config fetch for editing now works (no auth on /api/page/:shortId and /api/form/:shortId)');
-  console.log('✓ Broadcast messages sanitized for Telegram HTML\n');
+  console.log('✓ Messages longer than ~3900 chars are now split into numbered chunks');
+  console.log('✓ HTML sanitization and all previous features preserved\n');
 });
