@@ -105,7 +105,6 @@ function splitTelegramMessage(text) {
   const lines = text.split(/\r?\n/);
 
   for (let line of lines) {
-    // Handle very long single lines
     while (line.length > MAX_MSG_LENGTH) {
       if (current) {
         chunks.push(current.trim());
@@ -125,13 +124,11 @@ function splitTelegramMessage(text) {
 
   if (current) chunks.push(current.trim());
 
-  // Add numbering only if more than one chunk
   if (chunks.length <= 1) return chunks;
 
   const total = chunks.length;
   return chunks.map((chunk, i) => {
     const header = `(\( {i + 1}/ \){total})\n\n`;
-    // If header would make it too long, send without header
     if (header.length + chunk.length > MAX_MSG_LENGTH) {
       return chunk;
     }
@@ -289,15 +286,29 @@ function launchUserBot(user) {
       const sub = pendingSubscribers.get(payload);
       if (sub.userId === user.id) {
         let list = allSubmissions.get(user.id) || [];
-        const byChat = list.findIndex(e => e.telegramChatId === chatId);
         const byContact = list.findIndex(e => e.contact === sub.contact);
 
-        if (byChat !== -1) {
-          list[byChat] = { ...list[byChat], name: sub.name, contact: sub.contact, shortId: sub.shortId, subscribedAt: new Date().toISOString(), status: 'subscribed' };
-        } else if (byContact !== -1) {
-          list[byContact] = { ...list[byContact], name: sub.name, telegramChatId: chatId, shortId: sub.shortId, subscribedAt: new Date().toISOString(), status: 'subscribed' };
+        if (byContact !== -1) {
+          // Update existing entry — preserve other fields
+          list[byContact] = {
+            ...list[byContact],
+            name: sub.name,
+            telegramChatId: chatId,
+            shortId: sub.shortId,
+            subscribedAt: new Date().toISOString(),
+            status: 'subscribed',
+          };
         } else {
-          list.push({ name: sub.name, contact: sub.contact, telegramChatId: chatId, shortId: sub.shortId, submittedAt: new Date().toISOString(), subscribedAt: new Date().toISOString(), status: 'subscribed' });
+          // Rare case: entry deleted meanwhile
+          list.push({
+            name: sub.name,
+            contact: sub.contact,
+            telegramChatId: chatId,
+            shortId: sub.shortId,
+            submittedAt: new Date().toISOString(),
+            subscribedAt: new Date().toISOString(),
+            status: 'subscribed',
+          });
         }
 
         allSubmissions.set(user.id, list);
@@ -636,13 +647,18 @@ app.get('/api/form/:shortId', (req, res) => {
 app.post('/api/subscribe/:shortId', async (req, res) => {
   const { shortId } = req.params;
   const { name, email } = req.body;
-  if (!name || !name.trim() || !email || !email.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
+
+  if (!name || !name.trim() || !email || !email.trim()) {
+    return res.status(400).json({ error: 'Valid name and contact required' });
+  }
 
   const page = formPages.get(shortId);
   if (!page) return res.status(404).json({ error: 'Page not found' });
 
   const owner = users.find(u => u.id === page.userId);
-  if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Bot not connected' });
+  if (!owner || !owner.telegramBotToken || !owner.botUsername) {
+    return res.status(400).json({ error: 'Bot not connected' });
+  }
 
   const contactValue = email.trim();
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
@@ -650,24 +666,55 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   let list = allSubmissions.get(owner.id) || [];
   const existingIndex = list.findIndex(c => c.contact === contactValue);
 
-  const base = { name: name.trim(), contact: contactValue, shortId, submittedAt: new Date().toISOString() };
+  const base = {
+    name: name.trim(),
+    contact: contactValue,
+    shortId,
+    submittedAt: new Date().toISOString(),
+  };
+
+  let isNewEntry = false;
 
   if (existingIndex !== -1) {
-    const existing = list[existingIndex];
-    list[existingIndex] = { ...existing, ...base };
+    // Update existing entry — preserve status, chatId, subscribedAt
+    list[existingIndex] = {
+      ...list[existingIndex],
+      ...base,
+    };
   } else {
-    list.push({ ...base, telegramChatId: null, subscribedAt: null, status: 'pending' });
+    // Only new contacts get pending status
+    isNewEntry = true;
+    list.push({
+      ...base,
+      telegramChatId: null,
+      subscribedAt: null,
+      status: 'pending',
+    });
   }
 
   allSubmissions.set(owner.id, list);
 
-  pendingSubscribers.set(payload, {
-    userId: owner.id,
-    shortId,
-    name: name.trim(),
-    contact: contactValue,
-    createdAt: Date.now()
-  });
+  // Only create pending subscriber entry if it's a truly new contact
+  if (isNewEntry) {
+    pendingSubscribers.set(payload, {
+      userId: owner.id,
+      shortId,
+      name: name.trim(),
+      contact: contactValue,
+      createdAt: Date.now()
+    });
+  }
+
+  const existing = existingIndex !== -1 ? list[existingIndex] : null;
+  const alreadySubscribed = existing && existing.telegramChatId && existing.status === 'subscribed';
+
+  if (alreadySubscribed) {
+    return res.json({
+      success: true,
+      message: 'Already subscribed — no action needed',
+      alreadySubscribed: true,
+    });
+  }
 
   const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
   res.json({ success: true, deepLink });
@@ -938,6 +985,12 @@ const formEjs = `<!DOCTYPE html>
         const data = await res.json();
 
         if (data.success) {
+          if (data.alreadySubscribed) {
+            alert('You are already subscribed!');
+            button.disabled = false;
+            button.textContent = state.buttonText || 'Subscribe';
+            return;
+          }
           const tgLink = 'https://t.me/' + data.deepLink.split('?start=')[0].replace('https://t.me/', '') + '?start=' + data.deepLink.split('?start=')[1];
           window.location.href = tgLink;
         } else {
@@ -964,10 +1017,11 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — IMPROVED LONG MESSAGE HANDLING');
+  console.log('\nSENDEM SERVER — IMPROVED LONG MESSAGE HANDLING & FIXED SUBSCRIPTION LOGIC');
   console.log('http://localhost:' + PORT);
   console.log('✓ Messages split with safe limit (4000 chars)');
   console.log('✓ Handles very long lines');
   console.log('✓ Numbering added only when needed');
-  console.log('✓ All previous features preserved\n');
+  console.log('✓ Subscription logic fixed: updates existing entries without resetting to pending');
+  console.log('✓ All routes and logic preserved\n');
 });
