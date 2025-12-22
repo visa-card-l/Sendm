@@ -1,5 +1,4 @@
-// server.js — FULL VERSION with improved message splitting for long broadcasts
-// Broadcast messages are sanitized and split into chunks if too long
+// server.js — FULL VERSION with fixed subscription logic (no duplicates, no stale pending entries)
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -37,7 +36,7 @@ const pendingSubscribers = new Map();
 // Broadcast config
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 15000;
-const MAX_MSG_LENGTH = 4000; // Safe with HTML + numbering overhead (Telegram max: 4096)
+const MAX_MSG_LENGTH = 4000;
 
 // Persistence
 const DATA_DIR = path.join(__dirname, 'data');
@@ -47,7 +46,7 @@ const BROADCASTS_FILE = path.join(DATA_DIR, 'scheduled_broadcasts.json');
 let scheduledBroadcasts = new Map();
 const scheduledTimeouts = new Map();
 
-// Telegram HTML sanitizer for broadcast messages
+// Telegram HTML sanitizer
 function sanitizeTelegramHtml(unsafe) {
   if (!unsafe || typeof unsafe !== 'string') return '';
 
@@ -79,24 +78,19 @@ function sanitizeTelegramHtml(unsafe) {
     while ((attrMatch = attrRegex.exec(match)) !== null) {
       const attrName = attrMatch[1].toLowerCase();
       let attrValue = attrMatch[2];
-
       if (allowedAttrs[tag] && allowedAttrs[tag].includes(attrName)) {
-        if (attrName === 'href') {
-          if (!/^https?:\/\//i.test(attrValue) && !attrValue.startsWith('/')) {
-            attrValue = '#';
-          }
+        if (attrName === 'href' && !/^https?:\/\//i.test(attrValue) && !attrValue.startsWith('/')) {
+          attrValue = '#';
         }
         attrs += ' ' + attrName + '="' + attrValue.replace(/"/g, '&quot;') + '"';
       }
     }
-
     return '<' + tag + attrs + '>';
   });
 
   return clean.trim();
 }
 
-// Improved message splitting function
 function splitTelegramMessage(text) {
   if (!text) return [];
 
@@ -129,9 +123,7 @@ function splitTelegramMessage(text) {
   const total = chunks.length;
   return chunks.map((chunk, i) => {
     const header = `(\( {i + 1}/ \){total})\n\n`;
-    if (header.length + chunk.length > MAX_MSG_LENGTH) {
-      return chunk;
-    }
+    if (header.length + chunk.length > MAX_MSG_LENGTH) return chunk;
     return header + chunk;
   });
 }
@@ -282,46 +274,58 @@ function launchUserBot(user) {
     const payload = ctx.startPayload || '';
     const chatId = ctx.chat.id.toString();
 
-    if (payload.startsWith('sub_') && pendingSubscribers.has(payload)) {
-      const sub = pendingSubscribers.get(payload);
-      if (sub.userId === user.id) {
-        let list = allSubmissions.get(user.id) || [];
-        const byContact = list.findIndex(e => e.contact === sub.contact);
-
-        if (byContact !== -1) {
-          // Update existing entry — preserve other fields
-          list[byContact] = {
-            ...list[byContact],
-            name: sub.name,
-            telegramChatId: chatId,
-            shortId: sub.shortId,
-            subscribedAt: new Date().toISOString(),
-            status: 'subscribed',
-          };
-        } else {
-          // Rare case: entry deleted meanwhile
-          list.push({
-            name: sub.name,
-            contact: sub.contact,
-            telegramChatId: chatId,
-            shortId: sub.shortId,
-            submittedAt: new Date().toISOString(),
-            subscribedAt: new Date().toISOString(),
-            status: 'subscribed',
-          });
-        }
-
-        allSubmissions.set(user.id, list);
-        pendingSubscribers.delete(payload);
-        await ctx.replyWithHTML('<b>✅ Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you ❤️');
-        return;
-      }
-    }
-
     if (payload === user.id) {
       user.telegramChatId = chatId;
       user.isTelegramConnected = true;
       await ctx.replyWithHTML('<b>Sendm 2FA Connected Successfully! 🔐</b>\n\nYou will receive login codes here.');
+      return;
+    }
+
+    if (payload.startsWith('sub_') && pendingSubscribers.has(payload)) {
+      const sub = pendingSubscribers.get(payload);
+      if (sub.userId !== user.id) return;
+
+      let list = allSubmissions.get(user.id) || [];
+
+      const contactLower = sub.contact.toLowerCase();
+      const matchingEntries = list.filter(e => e.contact.toLowerCase() === contactLower);
+
+      let updatedEntry;
+      if (matchingEntries.length > 0) {
+        // Prefer entry with chatId if exists
+        updatedEntry = matchingEntries.find(e => e.telegramChatId) || matchingEntries[0];
+        updatedEntry = {
+          ...updatedEntry,
+          name: sub.name,
+          telegramChatId: chatId,
+          shortId: sub.shortId,
+          subscribedAt: new Date().toISOString(),
+          status: 'subscribed',
+        };
+        // Remove all old matching entries
+        list = list.filter(e => e.contact.toLowerCase() !== contactLower);
+      } else {
+        // Rare case: no entry found
+        updatedEntry = {
+          name: sub.name,
+          contact: sub.contact,
+          telegramChatId: chatId,
+          shortId: sub.shortId,
+          submittedAt: new Date().toISOString(),
+          subscribedAt: new Date().toISOString(),
+          status: 'subscribed',
+        };
+      }
+
+      list.push(updatedEntry);
+      allSubmissions.set(user.id, list);
+      pendingSubscribers.delete(payload);
+
+      await ctx.replyWithHTML(
+        '<b>✅ Subscription Confirmed!</b>\n\n' +
+        'Hi <b>' + escapeHtml(sub.name) + '</b>!\n\n' +
+        'You\'re now subscribed.\n\nThank you ❤️'
+      );
       return;
     }
 
@@ -660,32 +664,32 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
     return res.status(400).json({ error: 'Bot not connected' });
   }
 
-  const contactValue = email.trim();
+  const contactValue = email.trim().toLowerCase(); // normalize
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
   let list = allSubmissions.get(owner.id) || [];
-  const existingIndex = list.findIndex(c => c.contact === contactValue);
 
-  const base = {
+  const existingIndex = list.findIndex(c => c.contact.toLowerCase() === contactValue);
+
+  const baseUpdate = {
     name: name.trim(),
     contact: contactValue,
     shortId,
     submittedAt: new Date().toISOString(),
   };
 
-  let isNewEntry = false;
+  let isNewContact = false;
 
   if (existingIndex !== -1) {
-    // Update existing entry — preserve status, chatId, subscribedAt
+    // Update existing — preserve status & chatId
     list[existingIndex] = {
       ...list[existingIndex],
-      ...base,
+      ...baseUpdate,
     };
   } else {
-    // Only new contacts get pending status
-    isNewEntry = true;
+    isNewContact = true;
     list.push({
-      ...base,
+      ...baseUpdate,
       telegramChatId: null,
       subscribedAt: null,
       status: 'pending',
@@ -694,8 +698,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
 
   allSubmissions.set(owner.id, list);
 
-  // Only create pending subscriber entry if it's a truly new contact
-  if (isNewEntry) {
+  if (isNewContact) {
     pendingSubscribers.set(payload, {
       userId: owner.id,
       shortId,
@@ -1017,11 +1020,10 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — IMPROVED LONG MESSAGE HANDLING & FIXED SUBSCRIPTION LOGIC');
+  console.log('\nSENDEM SERVER — FIXED SUBSCRIPTION LOGIC (NO DUPLICATES)');
   console.log('http://localhost:' + PORT);
-  console.log('✓ Messages split with safe limit (4000 chars)');
-  console.log('✓ Handles very long lines');
-  console.log('✓ Numbering added only when needed');
-  console.log('✓ Subscription logic fixed: updates existing entries without resetting to pending');
-  console.log('✓ All routes and logic preserved\n');
+  console.log('✓ One entry per contact (case-insensitive)');
+  console.log('✓ Updates preserve status & chatId');
+  console.log('✓ Telegram /start cleans up & sets subscribed');
+  console.log('✓ All routes preserved\n');
 });
