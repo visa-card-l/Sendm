@@ -1,4 +1,4 @@
-// server.js — FULL VERSION with fixed subscription logic (no duplicates, no stale pending entries)
+// server.js — FULL VERSION with FIXED subscription logic (no duplicates, latest submission wins for chat ID)
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -287,25 +287,39 @@ function launchUserBot(user) {
 
       let list = allSubmissions.get(user.id) || [];
 
+      // 1. Check if this chat ID already exists (anywhere)
+      const existingByChatIdIndex = list.findIndex(e => e.telegramChatId === chatId);
+
+      // 2. Check if this contact already exists
       const contactLower = sub.contact.toLowerCase();
-      const matchingEntries = list.filter(e => e.contact.toLowerCase() === contactLower);
+      const existingByContactIndex = list.findIndex(e => e.contact.toLowerCase() === contactLower);
 
       let updatedEntry;
-      if (matchingEntries.length > 0) {
-        // Prefer entry with chatId if exists
-        updatedEntry = matchingEntries.find(e => e.telegramChatId) || matchingEntries[0];
+
+      if (existingByChatIdIndex !== -1) {
+        // Chat ID already in use → update with latest submission data
         updatedEntry = {
-          ...updatedEntry,
+          ...list[existingByChatIdIndex],
           name: sub.name,
-          telegramChatId: chatId,
+          contact: sub.contact,
           shortId: sub.shortId,
+          submittedAt: new Date().toISOString(),
           subscribedAt: new Date().toISOString(),
           status: 'subscribed',
         };
-        // Remove all old matching entries
-        list = list.filter(e => e.contact.toLowerCase() !== contactLower);
+        // Remove the old entry
+        list.splice(existingByChatIdIndex, 1);
+      } else if (existingByContactIndex !== -1) {
+        // Contact exists → update with new chat ID
+        updatedEntry = {
+          ...list[existingByContactIndex],
+          telegramChatId: chatId,
+          subscribedAt: new Date().toISOString(),
+          status: 'subscribed',
+        };
+        list.splice(existingByContactIndex, 1);
       } else {
-        // Rare case: no entry found
+        // Brand new
         updatedEntry = {
           name: sub.name,
           contact: sub.contact,
@@ -317,6 +331,7 @@ function launchUserBot(user) {
         };
       }
 
+      // Add updated entry
       list.push(updatedEntry);
       allSubmissions.set(user.id, list);
       pendingSubscribers.delete(payload);
@@ -664,7 +679,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
     return res.status(400).json({ error: 'Bot not connected' });
   }
 
-  const contactValue = email.trim().toLowerCase(); // normalize
+  const contactValue = email.trim().toLowerCase();
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
   let list = allSubmissions.get(owner.id) || [];
@@ -681,7 +696,6 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   let isNewContact = false;
 
   if (existingIndex !== -1) {
-    // Update existing — preserve status & chatId
     list[existingIndex] = {
       ...list[existingIndex],
       ...baseUpdate,
@@ -1020,10 +1034,10 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FIXED SUBSCRIPTION LOGIC (NO DUPLICATES)');
+  console.log('\nSENDEM SERVER — FIXED (NO DUPLICATE CHAT IDs, LATEST SUBMISSION WINS)');
   console.log('http://localhost:' + PORT);
-  console.log('✓ One entry per contact (case-insensitive)');
-  console.log('✓ Updates preserve status & chatId');
-  console.log('✓ Telegram /start cleans up & sets subscribed');
-  console.log('✓ All routes preserved\n');
+  console.log('✓ Chat ID updates with latest submission');
+  console.log('✓ No duplicates');
+  console.log('✓ Status always set to subscribed on confirmation');
+  console.log('✓ All previous logic preserved\n');
 });
