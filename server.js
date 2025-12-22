@@ -1,4 +1,4 @@
-// server.js — FULL VERSION with message splitting for long broadcasts
+// server.js — FULL VERSION with improved message splitting for long broadcasts
 // Broadcast messages are sanitized and split into chunks if too long
 
 const express = require('express');
@@ -37,7 +37,7 @@ const pendingSubscribers = new Map();
 // Broadcast config
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 15000;
-const MAX_MSG_LENGTH = 3900; // Safe under Telegram's 4096 char limit with HTML
+const MAX_MSG_LENGTH = 4000; // Safe with HTML + numbering overhead (Telegram max: 4096)
 
 // Persistence
 const DATA_DIR = path.join(__dirname, 'data');
@@ -94,6 +94,49 @@ function sanitizeTelegramHtml(unsafe) {
   });
 
   return clean.trim();
+}
+
+// Improved message splitting function
+function splitTelegramMessage(text) {
+  if (!text) return [];
+
+  const chunks = [];
+  let current = '';
+  const lines = text.split(/\r?\n/);
+
+  for (let line of lines) {
+    // Handle very long single lines
+    while (line.length > MAX_MSG_LENGTH) {
+      if (current) {
+        chunks.push(current.trim());
+        current = '';
+      }
+      chunks.push(line.substring(0, MAX_MSG_LENGTH).trim());
+      line = line.substring(MAX_MSG_LENGTH);
+    }
+
+    if (current.length + line.length + (current ? 1 : 0) <= MAX_MSG_LENGTH) {
+      current += (current ? '\n' : '') + line;
+    } else {
+      if (current) chunks.push(current.trim());
+      current = line;
+    }
+  }
+
+  if (current) chunks.push(current.trim());
+
+  // Add numbering only if more than one chunk
+  if (chunks.length <= 1) return chunks;
+
+  const total = chunks.length;
+  return chunks.map((chunk, i) => {
+    const header = `(\( {i + 1}/ \){total})\n\n`;
+    // If header would make it too long, send without header
+    if (header.length + chunk.length > MAX_MSG_LENGTH) {
+      return chunk;
+    }
+    return header + chunk;
+  });
 }
 
 function loadScheduledBroadcasts() {
@@ -175,31 +218,10 @@ async function executeBroadcast(userId, message) {
   if (!bot || !bot.telegram) return { sent: 0, failed: 0, error: 'Bot not connected' };
 
   const sanitizedMessage = sanitizeTelegramHtml(message);
+  const numberedChunks = splitTelegramMessage(sanitizedMessage);
 
   const targets = (allSubmissions.get(userId) || []).filter(s => s.status === 'subscribed' && s.telegramChatId);
   if (targets.length === 0) return { sent: 0, failed: 0, total: 0 };
-
-  // Split long messages into chunks
-  const messageChunks = [];
-  let currentChunk = '';
-  const lines = sanitizedMessage.split('\n');
-
-  for (const line of lines) {
-    if (currentChunk.length + line.length + 1 > MAX_MSG_LENGTH) {
-      if (currentChunk) messageChunks.push(currentChunk.trim());
-      currentChunk = line;
-    } else {
-      currentChunk += (currentChunk ? '\n' : '') + line;
-    }
-  }
-  if (currentChunk) messageChunks.push(currentChunk.trim());
-
-  // Add numbering if multiple chunks
-  const numberedChunks = messageChunks.map((chunk, index) => {
-    return messageChunks.length > 1
-      ? `(\( {index + 1}/ \){messageChunks.length})\n\n${chunk}`
-      : chunk;
-  });
 
   const batches = [];
   for (let i = 0; i < targets.length; i += BATCH_SIZE) {
@@ -942,8 +964,10 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — LONG MESSAGES FIXED');
+  console.log('\nSENDEM SERVER — IMPROVED LONG MESSAGE HANDLING');
   console.log('http://localhost:' + PORT);
-  console.log('✓ Messages longer than ~3900 chars are now split into numbered chunks');
-  console.log('✓ HTML sanitization and all previous features preserved\n');
+  console.log('✓ Messages split with safe limit (4000 chars)');
+  console.log('✓ Handles very long lines');
+  console.log('✓ Numbering added only when needed');
+  console.log('✓ All previous features preserved\n');
 });
