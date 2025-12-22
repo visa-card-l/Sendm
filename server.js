@@ -1,4 +1,4 @@
-// server.js — FULL VERSION with FIXED subscription logic (no duplicates, latest submission wins for chat ID)
+// server.js — FIXED: No leftover pending entries after subscription confirmation
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -287,17 +287,19 @@ function launchUserBot(user) {
 
       let list = allSubmissions.get(user.id) || [];
 
-      // 1. Check if this chat ID already exists (anywhere)
-      const existingByChatIdIndex = list.findIndex(e => e.telegramChatId === chatId);
-
-      // 2. Check if this contact already exists
       const contactLower = sub.contact.toLowerCase();
-      const existingByContactIndex = list.findIndex(e => e.contact.toLowerCase() === contactLower);
+      const chatIdStr = chatId.toString();
+
+      // Find existing entries
+      const existingByChatIdIndex = list.findIndex(e => e.telegramChatId === chatIdStr);
+      const existingByContactIndices = list
+        .map((e, i) => (e.contact.toLowerCase() === contactLower ? i : -1))
+        .filter(i => i !== -1);
 
       let updatedEntry;
 
+      // Case 1: Chat ID already in use → update with latest submission
       if (existingByChatIdIndex !== -1) {
-        // Chat ID already in use → update with latest submission data
         updatedEntry = {
           ...list[existingByChatIdIndex],
           name: sub.name,
@@ -307,23 +309,26 @@ function launchUserBot(user) {
           subscribedAt: new Date().toISOString(),
           status: 'subscribed',
         };
-        // Remove the old entry
         list.splice(existingByChatIdIndex, 1);
-      } else if (existingByContactIndex !== -1) {
-        // Contact exists → update with new chat ID
+      }
+      // Case 2: Contact exists (but chat ID is new) → update with chat ID
+      else if (existingByContactIndices.length > 0) {
+        // Use the most recent one (last in array)
+        const idx = existingByContactIndices[existingByContactIndices.length - 1];
         updatedEntry = {
-          ...list[existingByContactIndex],
-          telegramChatId: chatId,
+          ...list[idx],
+          telegramChatId: chatIdStr,
           subscribedAt: new Date().toISOString(),
           status: 'subscribed',
         };
-        list.splice(existingByContactIndex, 1);
-      } else {
-        // Brand new
+        list.splice(idx, 1);
+      }
+      // Case 3: Brand new
+      else {
         updatedEntry = {
           name: sub.name,
           contact: sub.contact,
-          telegramChatId: chatId,
+          telegramChatId: chatIdStr,
           shortId: sub.shortId,
           submittedAt: new Date().toISOString(),
           subscribedAt: new Date().toISOString(),
@@ -331,7 +336,12 @@ function launchUserBot(user) {
         };
       }
 
-      // Add updated entry
+      // CRITICAL FIX: Remove ALL pending entries for this contact
+      list = list.filter(entry => 
+        !(entry.status === 'pending' && entry.contact.toLowerCase() === contactLower)
+      );
+
+      // Add the confirmed entry
       list.push(updatedEntry);
       allSubmissions.set(user.id, list);
       pendingSubscribers.delete(payload);
@@ -1034,10 +1044,10 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FIXED (NO DUPLICATE CHAT IDs, LATEST SUBMISSION WINS)');
+  console.log('\nSENDEM SERVER — FIXED (NO LEFTOVER PENDING ENTRIES)');
   console.log('http://localhost:' + PORT);
-  console.log('✓ Chat ID updates with latest submission');
-  console.log('✓ No duplicates');
-  console.log('✓ Status always set to subscribed on confirmation');
-  console.log('✓ All previous logic preserved\n');
+  console.log('✓ No duplicate chat IDs');
+  console.log('✓ Latest submission wins');
+  console.log('✓ Pending entries cleaned after confirmation');
+  console.log('✓ All other logic preserved\n');
 });
