@@ -1,6 +1,4 @@
-// server.js — FULL VERSION with improved message splitting for long broadcasts
-// Broadcast messages are sanitized and split into chunks if too long
-// FIXED: After subscription confirmation, any pending entry with the same contact is removed to prevent duplicates
+// server.js — FULL VERSION with improved message splitting + editing support for schedule.html
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -132,7 +130,6 @@ function splitTelegramMessage(text) {
   const total = chunks.length;
   return chunks.map((chunk, i) => {
     const header = `(\( {i + 1}/ \){total})\n\n`;
-    // If header would make it too long, send without header
     if (header.length + chunk.length > MAX_MSG_LENGTH) {
       return chunk;
     }
@@ -306,12 +303,10 @@ function launchUserBot(user) {
           updatedEntry = true;
         }
 
-        // === FIX: Remove any lingering pending entry with the same contact ===
         if (updatedEntry) {
           list = list.filter(entry => !(entry.contact === sub.contact && entry.status === 'pending'));
           allSubmissions.set(user.id, list);
         }
-        // =====================================================================
 
         pendingSubscribers.delete(payload);
         await ctx.replyWithHTML('<b>✅ Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you ❤️');
@@ -805,7 +800,35 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res)
   res.json({ success: true, broadcastId, scheduledTime: new Date(task.scheduledTime).toISOString() });
 });
 
-// EJS Templates
+// === NEW ENDPOINT FOR EDITING IN schedule.html ===
+app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req, res) => {
+  const { broadcastId } = req.params;
+  const task = scheduledBroadcasts.get(broadcastId);
+
+  if (!task || task.userId !== req.user.userId) {
+    return res.status(404).json({ error: 'Broadcast not found or access denied' });
+  }
+
+  if (task.status !== 'pending') {
+    return res.status(400).json({ error: 'Can only edit pending broadcasts' });
+  }
+
+  // Convert UTC timestamp to local datetime-local format (YYYY-MM-DDTHH:mm)
+  const scheduledDate = new Date(task.scheduledTime);
+  const offsetMs = scheduledDate.getTimezoneOffset() * 60 * 1000;
+  const localDate = new Date(scheduledDate.getTime() - offsetMs);
+  const localIsoString = localDate.toISOString().slice(0, 16);
+
+  res.json({
+    success: true,
+    message: task.message,
+    scheduledTime: localIsoString,
+    recipients: task.recipients || 'all'
+  });
+});
+// ================================================
+
+// EJS Templates (unchanged)
 const viewsDir = path.join(__dirname, 'views');
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
 if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
@@ -976,11 +999,8 @@ fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — IMPROVED LONG MESSAGE HANDLING + DUPLICATE PENDING FIX');
+  console.log('\nSENDEM SERVER — NOW SUPPORTS EDITING IN schedule.html');
   console.log('http://localhost:' + PORT);
-  console.log('✓ Messages split with safe limit (4000 chars)');
-  console.log('✓ Handles very long lines');
-  console.log('✓ Numbering added only when needed');
-  console.log('✓ Fixed: No duplicate pending + subscribed entries after confirmation');
+  console.log('✓ Editing scheduled broadcasts works');
   console.log('✓ All previous features preserved\n');
 });
