@@ -1,4 +1,5 @@
-// server.js — FULL VERSION with improved message splitting + editing support for schedule.html
+// server.js — COMPLETE & FULLY EXPLICIT VERSION
+// Dashboard shows only future broadcasts | Sent ones deleted + Telegram report sent
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
@@ -36,7 +37,7 @@ const pendingSubscribers = new Map();
 // Broadcast config
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 15000;
-const MAX_MSG_LENGTH = 4000; // Safe with HTML + numbering overhead (Telegram max: 4096)
+const MAX_MSG_LENGTH = 4000;
 
 // Persistence
 const DATA_DIR = path.join(__dirname, 'data');
@@ -46,7 +47,8 @@ const BROADCASTS_FILE = path.join(DATA_DIR, 'scheduled_broadcasts.json');
 let scheduledBroadcasts = new Map();
 const scheduledTimeouts = new Map();
 
-// Telegram HTML sanitizer for broadcast messages
+// ======================== UTILITIES ========================
+
 function sanitizeTelegramHtml(unsafe) {
   if (!unsafe || typeof unsafe !== 'string') return '';
 
@@ -95,7 +97,6 @@ function sanitizeTelegramHtml(unsafe) {
   return clean.trim();
 }
 
-// Improved message splitting function
 function splitTelegramMessage(text) {
   if (!text) return [];
 
@@ -104,7 +105,6 @@ function splitTelegramMessage(text) {
   const lines = text.split(/\r?\n/);
 
   for (let line of lines) {
-    // Handle very long single lines
     while (line.length > MAX_MSG_LENGTH) {
       if (current) {
         chunks.push(current.trim());
@@ -124,17 +124,18 @@ function splitTelegramMessage(text) {
 
   if (current) chunks.push(current.trim());
 
-  // Add numbering only if more than one chunk
   if (chunks.length <= 1) return chunks;
 
   const total = chunks.length;
   return chunks.map((chunk, i) => {
     const header = `(\( {i + 1}/ \){total})\n\n`;
-    if (header.length + chunk.length > MAX_MSG_LENGTH) {
-      return chunk;
-    }
+    if (header.length + chunk.length > MAX_MSG_LENGTH) return chunk;
     return header + chunk;
   });
+}
+
+function escapeHtml(unsafe) {
+  return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
 function loadScheduledBroadcasts() {
@@ -161,25 +162,44 @@ function loadScheduledBroadcasts() {
 
 function saveScheduledBroadcasts() {
   try {
-    fs.writeFileSync(BROADCASTS_FILE, JSON.stringify(Array.from(scheduledBroadcasts.values()), null, 2));
+    const pendingOnly = Array.from(scheduledBroadcasts.values()).filter(t => t.status === 'pending');
+    fs.writeFileSync(BROADCASTS_FILE, JSON.stringify(pendingOnly, null, 2));
   } catch (err) {
     console.error('Failed to save broadcasts:', err.message);
   }
 }
 
-function executeScheduledBroadcast(broadcastId) {
+// ======================== BROADCAST EXECUTION ========================
+
+async function executeScheduledBroadcast(broadcastId) {
   const task = scheduledBroadcasts.get(broadcastId);
   if (!task || task.status !== 'pending') return;
 
-  const result = executeBroadcast(task.userId, task.message);
+  const result = await executeBroadcast(task.userId, task.message);
 
-  task.status = result.error ? 'failed' : (result.failed === 0 ? 'sent' : 'partial');
-  if (result.error) task.error = result.error;
-  if (!result.error) task.result = { sent: result.sent, failed: result.failed, total: result.total };
-  if (result.failures && result.failures.length) task.failures = result.failures;
-  task.executedAt = new Date().toISOString();
+  // Build report message
+  let reportText = `<b>📤 Scheduled Broadcast Report</b>\n\n`;
+  if (result.error) {
+    reportText += `❌ <b>Failed</b>: ${escapeHtml(result.error)}\n`;
+  } else {
+    const emoji = result.failed === 0 ? '✅' : '⚠️';
+    reportText += `\( {emoji} <b> \){result.sent}/${result.total}</b> contacts received the message.\n`;
+    if (result.failed > 0) reportText += `❌ ${result.failed} failed.\n`;
+  }
+  reportText += `\n⏰ Executed: ${new Date().toLocaleString()}`;
 
-  scheduledBroadcasts.set(broadcastId, task);
+  // Send report to user via Telegram
+  const user = users.find(u => u.id === task.userId);
+  if (user && user.isTelegramConnected && user.telegramChatId && activeBots.has(user.id)) {
+    try {
+      await activeBots.get(user.id).telegram.sendMessage(user.telegramChatId, reportText, { parse_mode: 'HTML' });
+    } catch (err) {
+      console.error(`Failed to send report to ${user.email}:`, err.message);
+    }
+  }
+
+  // Remove completed broadcast from memory and disk
+  scheduledBroadcasts.delete(broadcastId);
   scheduledTimeouts.delete(broadcastId);
   saveScheduledBroadcasts();
 }
@@ -248,28 +268,7 @@ async function executeBroadcast(userId, message) {
   return { sent, failed, total: targets.length, failures: failures.length ? failures : undefined };
 }
 
-// Startup
-loadScheduledBroadcasts();
-users.forEach(user => { if (user.telegramBotToken) launchUserBot(user); });
-process.on('SIGTERM', () => { for (const t of scheduledTimeouts.values()) clearTimeout(t); scheduledTimeouts.clear(); });
-
-// Helpers
-function generate2FACode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
-
-async function send2FACodeViaBot(user, code) {
-  if (!user.isTelegramConnected || !user.telegramChatId || !activeBots.has(user.id)) return false;
-  try {
-    await activeBots.get(user.id).telegram.sendMessage(user.telegramChatId,
-      'Security Alert – Password Reset\n\nYour 6-digit code:\n\n<b>' + code + '</b>\n\nValid for 10 minutes.', { parse_mode: 'HTML' });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function escapeHtml(unsafe) {
-  return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
-}
+// ======================== BOT LAUNCH ========================
 
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
@@ -331,14 +330,8 @@ function launchUserBot(user) {
   activeBots.set(user.id, bot);
 }
 
-setInterval(() => {
-  const now = Date.now();
-  for (const [p, d] of pendingSubscribers.entries()) {
-    if (now - d.createdAt > 30 * 60 * 1000) pendingSubscribers.delete(p);
-  }
-}, 60 * 60 * 1000);
+// ======================== JWT MIDDLEWARE ========================
 
-// JWT Middleware
 const authenticateToken = (req, res, next) => {
   const token = req.headers.authorization ? req.headers.authorization.split(' ')[1] : req.query.token;
   if (!token) return res.status(401).json({ error: 'Access token required' });
@@ -349,7 +342,8 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Auth Routes
+// ======================== AUTH ROUTES ========================
+
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { fullName, email, password } = req.body;
   if (!fullName || !email || !password) return res.status(400).json({ error: 'All fields required' });
@@ -466,6 +460,19 @@ app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
   res.json({ activated: user.isTelegramConnected, chatId: user.telegramChatId || null });
 });
 
+function generate2FACode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
+
+async function send2FACodeViaBot(user, code) {
+  if (!user.isTelegramConnected || !user.telegramChatId || !activeBots.has(user.id)) return false;
+  try {
+    await activeBots.get(user.id).telegram.sendMessage(user.telegramChatId,
+      'Security Alert – Password Reset\n\nYour 6-digit code:\n\n<b>' + code + '</b>\n\nValid for 10 minutes.', { parse_mode: 'HTML' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 app.post('/api/auth/forgot-password', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
@@ -515,7 +522,8 @@ app.post('/api/auth/reset-password', async (req, res) => {
   res.json({ success: true, message: 'Password reset successful' });
 });
 
-// Pages Routes
+// ======================== PAGES ROUTES ========================
+
 app.get('/api/pages', authenticateToken, (req, res) => {
   const pages = Array.from(landingPages.entries())
     .filter(([_, p]) => p.userId === req.user.userId)
@@ -588,7 +596,8 @@ app.get('/api/page/:shortId', (req, res) => {
   res.json({ shortId: req.params.shortId, title: page.title, config: page.config });
 });
 
-// Forms Routes
+// ======================== FORMS ROUTES ========================
+
 app.get('/api/forms', authenticateToken, (req, res) => {
   const forms = Array.from(formPages.entries())
     .filter(([_, f]) => f.userId === req.user.userId)
@@ -639,7 +648,8 @@ app.get('/api/form/:shortId', (req, res) => {
   res.json({ shortId: req.params.shortId, title: form.title, state: form.state });
 });
 
-// Subscription & Contacts
+// ======================== SUBSCRIPTION & CONTACTS ========================
+
 app.post('/api/subscribe/:shortId', async (req, res) => {
   const { shortId } = req.params;
   const { name, email } = req.body;
@@ -660,8 +670,7 @@ app.post('/api/subscribe/:shortId', async (req, res) => {
   const base = { name: name.trim(), contact: contactValue, shortId, submittedAt: new Date().toISOString() };
 
   if (existingIndex !== -1) {
-    const existing = list[existingIndex];
-    list[existingIndex] = { ...existing, ...base };
+    list[existingIndex] = { ...list[existingIndex], ...base };
   } else {
     list.push({ ...base, telegramChatId: null, subscribedAt: null, status: 'pending' });
   }
@@ -706,13 +715,13 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
 });
 
-// Broadcast Routes
+// ======================== BROADCAST ROUTES ========================
+
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
-
   const result = await executeBroadcast(req.user.userId, sanitizedMessage);
   res.json({ success: true, ...result });
 });
@@ -725,8 +734,8 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
   const userId = req.user.userId;
 
   if (scheduledTime === 'now') {
-    return executeBroadcast(userId, sanitizedMessage)
-      .then(result => res.json({ success: true, ...result, immediate: true }));
+    executeBroadcast(userId, sanitizedMessage).then(result => res.json({ success: true, ...result, immediate: true }));
+    return;
   }
 
   const time = new Date(scheduledTime);
@@ -738,17 +747,17 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
 
 app.get('/api/broadcast/scheduled', authenticateToken, (req, res) => {
   const scheduled = Array.from(scheduledBroadcasts.values())
-    .filter(t => t.userId === req.user.userId)
+    .filter(t => t.userId === req.user.userId && t.status === 'pending')
     .map(t => ({
       broadcastId: t.broadcastId,
       message: t.message.substring(0, 100) + (t.message.length > 100 ? '...' : ''),
       scheduledTime: new Date(t.scheduledTime).toISOString(),
       status: t.status,
-      executedAt: t.executedAt || null,
       recipients: t.recipients,
-      isEditable: t.status === 'pending'
+      isEditable: true
     }))
     .sort((a, b) => new Date(b.scheduledTime) - new Date(a.scheduledTime));
+
   res.json({ success: true, scheduled });
 });
 
@@ -800,7 +809,6 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res)
   res.json({ success: true, broadcastId, scheduledTime: new Date(task.scheduledTime).toISOString() });
 });
 
-// === NEW ENDPOINT FOR EDITING IN schedule.html ===
 app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req, res) => {
   const { broadcastId } = req.params;
   const task = scheduledBroadcasts.get(broadcastId);
@@ -813,7 +821,6 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req
     return res.status(400).json({ error: 'Can only edit pending broadcasts' });
   }
 
-  // Convert UTC timestamp to local datetime-local format (YYYY-MM-DDTHH:mm)
   const scheduledDate = new Date(task.scheduledTime);
   const offsetMs = scheduledDate.getTimezoneOffset() * 60 * 1000;
   const localDate = new Date(scheduledDate.getTime() - offsetMs);
@@ -826,9 +833,9 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req
     recipients: task.recipients || 'all'
   });
 });
-// ================================================
 
-// EJS Templates (unchanged)
+// ======================== EJS TEMPLATES ========================
+
 const viewsDir = path.join(__dirname, 'views');
 if (!fs.existsSync(viewsDir)) fs.mkdirSync(viewsDir, { recursive: true });
 if (!fs.existsSync(path.join(__dirname, 'public'))) fs.mkdirSync(path.join(__dirname, 'public'), { recursive: true });
@@ -996,11 +1003,30 @@ fs.writeFileSync(path.join(viewsDir, 'landing.ejs'), landingEjs);
 fs.writeFileSync(path.join(viewsDir, 'form.ejs'), formEjs);
 fs.writeFileSync(path.join(viewsDir, '404.ejs'), notFoundEjs);
 
+// ======================== CLEANUP & START ========================
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [p, d] of pendingSubscribers.entries()) {
+    if (now - d.createdAt > 30 * 60 * 1000) pendingSubscribers.delete(p);
+  }
+}, 60 * 60 * 1000);
+
+loadScheduledBroadcasts();
+users.forEach(user => { if (user.telegramBotToken) launchUserBot(user); });
+
+process.on('SIGTERM', () => {
+  for (const t of scheduledTimeouts.values()) clearTimeout(t);
+  scheduledTimeouts.clear();
+});
+
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — NOW SUPPORTS EDITING IN schedule.html');
-  console.log('http://localhost:' + PORT);
-  console.log('✓ Editing scheduled broadcasts works');
-  console.log('✓ All previous features preserved\n');
+  console.log('\nSENDEM SERVER — FULLY EXPLICIT VERSION (Dec 24, 2025)');
+  console.log(`Server running at http://localhost:${PORT}`);
+  console.log('✓ Only future broadcasts appear in dashboard');
+  console.log('✓ Sent scheduled broadcasts are deleted from list');
+  console.log('✓ User receives Telegram delivery report');
+  console.log('✓ All routes and logic fully written out\n');
 });
