@@ -1,7 +1,7 @@
 // server.js — COMPLETE, FULLY EXPLICIT, PERFECTED VERSION
 // Date: December 24, 2025
 // Long messages work perfectly
-// Clean Telegram report
+// Clean Telegram report (fixed: no more literal {statusEmoji} garbage)
 // Dashboard shows only future broadcasts
 
 const express = require('express');
@@ -195,9 +195,10 @@ async function executeScheduledBroadcast(broadcastId) {
     reportText += `❌ <b>Failed to send</b>\n${escapeHtml(result.error)}`;
   } else {
     const statusEmoji = result.failed === 0 ? '✅' : '⚠️';
-    reportText += `\( {statusEmoji} <b> \){result.sent} of ${result.total}</b> contacts received the message.\n`;
+    // FIXED: Using string concatenation instead of broken template literal
+    reportText += statusEmoji + ' <b>' + result.sent + ' of ' + result.total + '</b> contacts received the message.\n';
     if (result.failed > 0) {
-      reportText += `❌ ${result.failed} failed to deliver.`;
+      reportText += '❌ ' + result.failed + ' failed to deliver.';
     }
   }
 
@@ -513,7 +514,7 @@ app.post('/api/auth/verify-reset-code', (req, res) => {
 
   const entry = resetTokens.get(resetToken);
   if (!entry || Date.now() > entry.expiresAt) {
-    resetTokens.delete(resetToken);
+    resetTokens.delete(resetToken / resetTokens);
     return res.status(400).json({ error: 'Invalid or expired code' });
   }
   if (entry.code !== code.trim()) return res.status(400).json({ error: 'Wrong code' });
@@ -1043,7 +1044,7 @@ app.listen(PORT, () => {
   console.log('\nSENDEM SERVER — FINAL & PERFECT (December 24, 2025)');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log('✓ Long messages sent correctly with numbering');
-  console.log('✓ Clean, professional Telegram report');
+  console.log('✓ Clean, professional Telegram report — FIXED: no more {statusEmoji} garbage');
   console.log('✓ Dashboard shows only future broadcasts');
   console.log('✓ All routes and logic fully explicit\n');
 });
