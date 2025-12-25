@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views')); // <-- EJS views directory
+app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -178,19 +178,19 @@ async function executeScheduledBroadcast(broadcastId) {
 
   const result = await executeBroadcast(task.userId, task.message);
 
-  let reportText = `<b>📤 Scheduled Broadcast Report</b>\n\n`;
+  let reportText = `<b>Scheduled Broadcast Report</b>\n\n`;
 
   if (result.error) {
-    reportText += `❌ <b>Failed to send</b>\n${escapeHtml(result.error)}`;
+    reportText += `<b>Failed to send</b>\n${escapeHtml(result.error)}`;
   } else {
-    const statusEmoji = result.failed === 0 ? '✅' : '⚠️';
+    const statusEmoji = result.failed === 0 ? '' : '';
     reportText += statusEmoji + ' <b>' + result.sent + ' of ' + result.total + '</b> contacts received the message.\n';
     if (result.failed > 0) {
-      reportText += '❌ ' + result.failed + ' failed to deliver.';
+      reportText += ' ' + result.failed + ' failed to deliver.';
     }
   }
 
-  reportText += `\n\n⏰ Sent on: ${new Date().toLocaleString()}`;
+  reportText += `\n\n Sent on: ${new Date().toLocaleString()}`;
 
   const user = users.find(u => u.id === task.userId);
   if (user && user.isTelegramConnected && user.telegramChatId && activeBots.has(user.id)) {
@@ -206,13 +206,14 @@ async function executeScheduledBroadcast(broadcastId) {
   saveScheduledBroadcasts();
 }
 
-// Updated: now accepts scheduledTimeMs as UTC milliseconds (number)
-function scheduleBroadcast(userId, message, recipients = 'all', scheduledTimeMs) {
+function scheduleBroadcast(userId, message, recipients = 'all', scheduledTimeISO) {
   const broadcastId = uuidv4();
-  const scheduledMs = Number(scheduledTimeMs);
+
+  // Parse the ISO string strictly as UTC
+  const scheduledMs = Date.parse(scheduledTimeISO);
 
   if (isNaN(scheduledMs)) {
-    throw new Error('Invalid scheduled timestamp');
+    throw new Error('Invalid scheduledTime ISO string');
   }
 
   const entry = {
@@ -232,6 +233,7 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTimeMs)
     const timeoutId = setTimeout(() => executeScheduledBroadcast(broadcastId), delay);
     scheduledTimeouts.set(broadcastId, timeoutId);
   } else {
+    // Should never happen due to validation in route, but safety
     executeScheduledBroadcast(broadcastId);
   }
 
@@ -318,7 +320,7 @@ function launchUserBot(user) {
         }
 
         pendingSubscribers.delete(payload);
-        await ctx.replyWithHTML('<b>✅ Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you ❤️');
+        await ctx.replyWithHTML('<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you');
         return;
       }
     }
@@ -326,7 +328,7 @@ function launchUserBot(user) {
     if (payload === user.id) {
       user.telegramChatId = chatId;
       user.isTelegramConnected = true;
-      await ctx.replyWithHTML('<b>Sendm 2FA Connected Successfully! 🔐</b>\n\nYou will receive login codes here.');
+      await ctx.replyWithHTML('<b>Sendm 2FA Connected Successfully!</b>\n\nYou will receive login codes here.');
       return;
     }
 
@@ -739,44 +741,28 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
 app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
+  if (!scheduledTime || typeof scheduledTime !== 'string') return res.status(400).json({ error: 'scheduledTime is required and must be a string' });
+
+  // Strict validation: must be full ISO with Z (UTC)
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(scheduledTime.trim())) {
+    return res.status(400).json({ error: 'scheduledTime must be a valid UTC ISO string ending with Z' });
+  }
 
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
   const userId = req.user.userId;
 
-  if (scheduledTime === 'now') {
-    executeBroadcast(userId, sanitizedMessage).then(result => res.json({ success: true, ...result, immediate: true }));
-    return;
+  const scheduledMs = Date.parse(scheduledTime);
+  if (isNaN(scheduledMs)) return res.status(400).json({ error: 'Invalid date format' });
+  if (scheduledMs <= Date.now()) return res.status(400).json({ error: 'Scheduled time must be in the future' });
+
+  let broadcastId;
+  try {
+    broadcastId = scheduleBroadcast(userId, sanitizedMessage, recipients, scheduledTime);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
   }
 
-  // scheduledTime is from <input type="datetime-local"> → format: "2025-12-31T10:30"
-  const localDate = new Date(scheduledTime);
-  if (isNaN(localDate.getTime())) {
-    return res.status(400).json({ error: 'Invalid date format' });
-  }
-
-  // Convert local time to UTC milliseconds
-  const utcMs = Date.UTC(
-    localDate.getFullYear(),
-    localDate.getMonth(),
-    localDate.getDate(),
-    localDate.getHours(),
-    localDate.getMinutes(),
-    0,
-    0
-  );
-
-  const now = Date.now();
-  if (utcMs <= now) {
-    return res.status(400).json({ error: 'Scheduled time must be in the future' });
-  }
-
-  const id = scheduleBroadcast(userId, sanitizedMessage, recipients, utcMs);
-
-  res.json({
-    success: true,
-    broadcastId: id,
-    scheduledTime: new Date(utcMs).toISOString()
-  });
+  res.json({ success: true, broadcastId, scheduledTime: new Date(scheduledMs).toISOString() });
 });
 
 app.get('/api/broadcast/scheduled', authenticateToken, (req, res) => {
@@ -826,21 +812,13 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res)
   if (recipients) task.recipients = recipients;
 
   if (scheduledTime) {
-    const localDate = new Date(scheduledTime);
-    if (isNaN(localDate.getTime())) return res.status(400).json({ error: 'Invalid date format' });
-
-    const newUtcMs = Date.UTC(
-      localDate.getFullYear(),
-      localDate.getMonth(),
-      localDate.getDate(),
-      localDate.getHours(),
-      localDate.getMinutes(),
-      0,
-      0
-    );
-
-    if (newUtcMs <= Date.now()) return res.status(400).json({ error: 'Scheduled time must be in the future' });
-    task.scheduledTime = newUtcMs;
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(scheduledTime.trim())) {
+      return res.status(400).json({ error: 'scheduledTime must be a valid UTC ISO string ending with Z' });
+    }
+    const newMs = Date.parse(scheduledTime);
+    if (isNaN(newMs)) return res.status(400).json({ error: 'Invalid date format' });
+    if (newMs <= Date.now()) return res.status(400).json({ error: 'Scheduled time must be in the future' });
+    task.scheduledTime = newMs;
   }
 
   const delay = task.scheduledTime - Date.now();
@@ -867,15 +845,13 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req
     return res.status(400).json({ error: 'Can only edit pending broadcasts' });
   }
 
-  // Convert stored UTC timestamp back to local datetime-local format
-  const utcDate = new Date(task.scheduledTime);
-  const localDate = new Date(utcDate.getTime() + utcDate.getTimezoneOffset() * 60000);
-  const localIsoString = localDate.toISOString().slice(0, 16);
+  // Fixed: Return UTC-based datetime-local string (no server timezone conversion)
+  const utcIsoString = new Date(task.scheduledTime).toISOString().slice(0, 16);
 
   res.json({
     success: true,
     message: task.message,
-    scheduledTime: localIsoString,
+    scheduledTime: utcIsoString,
     recipients: task.recipients || 'all'
   });
 });
@@ -902,8 +878,7 @@ app.use((req, res) => res.status(404).render('404'));
 app.listen(PORT, () => {
   console.log('\nSENDEM SERVER — FINAL & CLEAN (EJS in /views)');
   console.log(`Server running on http://localhost:${PORT}`);
-  console.log('✓ All EJS templates moved to views/ directory');
-  console.log('✓ All routes and logic preserved exactly');
-  console.log('✓ Long messages, clean reports, future-only dashboard — all working');
-  console.log('✓ Fixed scheduling bug: datetime-local now correctly converted to UTC\n');
+  console.log('All EJS templates moved to views/ directory');
+  console.log('All routes and logic preserved exactly');
+  console.log('Long messages, clean reports, future-only dashboard — all working\n');
 });
