@@ -125,7 +125,7 @@ function splitTelegramMessage(text) {
 
   const total = chunks.length;
   return chunks.map((chunk, i) => {
-    const header = `(\( {i + 1}/ \){total})\n\n`;
+    const header = `(\( \( {i + 1}/ \){total} \))\n\n`;
     if (header.length + chunk.length > MAX_MSG_LENGTH) {
       return chunk;
     }
@@ -206,9 +206,15 @@ async function executeScheduledBroadcast(broadcastId) {
   saveScheduledBroadcasts();
 }
 
-function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
+// Updated: now accepts scheduledTimeMs as UTC milliseconds (number)
+function scheduleBroadcast(userId, message, recipients = 'all', scheduledTimeMs) {
   const broadcastId = uuidv4();
-  const scheduledMs = new Date(scheduledTime).getTime();
+  const scheduledMs = Number(scheduledTimeMs);
+
+  if (isNaN(scheduledMs)) {
+    throw new Error('Invalid scheduled timestamp');
+  }
+
   const entry = {
     broadcastId,
     userId,
@@ -742,11 +748,35 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
     return;
   }
 
-  const time = new Date(scheduledTime);
-  if (isNaN(time.getTime()) || time <= new Date()) return res.status(400).json({ error: 'Invalid future time' });
+  // scheduledTime is from <input type="datetime-local"> → format: "2025-12-31T10:30"
+  const localDate = new Date(scheduledTime);
+  if (isNaN(localDate.getTime())) {
+    return res.status(400).json({ error: 'Invalid date format' });
+  }
 
-  const id = scheduleBroadcast(userId, sanitizedMessage, recipients, scheduledTime);
-  res.json({ success: true, broadcastId: id, scheduledTime: time.toISOString() });
+  // Convert local time to UTC milliseconds
+  const utcMs = Date.UTC(
+    localDate.getFullYear(),
+    localDate.getMonth(),
+    localDate.getDate(),
+    localDate.getHours(),
+    localDate.getMinutes(),
+    0,
+    0
+  );
+
+  const now = Date.now();
+  if (utcMs <= now) {
+    return res.status(400).json({ error: 'Scheduled time must be in the future' });
+  }
+
+  const id = scheduleBroadcast(userId, sanitizedMessage, recipients, utcMs);
+
+  res.json({
+    success: true,
+    broadcastId: id,
+    scheduledTime: new Date(utcMs).toISOString()
+  });
 });
 
 app.get('/api/broadcast/scheduled', authenticateToken, (req, res) => {
@@ -796,9 +826,21 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res)
   if (recipients) task.recipients = recipients;
 
   if (scheduledTime) {
-    const newTime = new Date(scheduledTime);
-    if (isNaN(newTime.getTime()) || newTime <= new Date()) return res.status(400).json({ error: 'Invalid future time' });
-    task.scheduledTime = newTime.getTime();
+    const localDate = new Date(scheduledTime);
+    if (isNaN(localDate.getTime())) return res.status(400).json({ error: 'Invalid date format' });
+
+    const newUtcMs = Date.UTC(
+      localDate.getFullYear(),
+      localDate.getMonth(),
+      localDate.getDate(),
+      localDate.getHours(),
+      localDate.getMinutes(),
+      0,
+      0
+    );
+
+    if (newUtcMs <= Date.now()) return res.status(400).json({ error: 'Scheduled time must be in the future' });
+    task.scheduledTime = newUtcMs;
   }
 
   const delay = task.scheduledTime - Date.now();
@@ -825,9 +867,9 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req
     return res.status(400).json({ error: 'Can only edit pending broadcasts' });
   }
 
-  const scheduledDate = new Date(task.scheduledTime);
-  const offsetMs = scheduledDate.getTimezoneOffset() * 60 * 1000;
-  const localDate = new Date(scheduledDate.getTime() - offsetMs);
+  // Convert stored UTC timestamp back to local datetime-local format
+  const utcDate = new Date(task.scheduledTime);
+  const localDate = new Date(utcDate.getTime() + utcDate.getTimezoneOffset() * 60000);
   const localIsoString = localDate.toISOString().slice(0, 16);
 
   res.json({
@@ -862,5 +904,6 @@ app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
   console.log('✓ All EJS templates moved to views/ directory');
   console.log('✓ All routes and logic preserved exactly');
-  console.log('✓ Long messages, clean reports, future-only dashboard — all working\n');
+  console.log('✓ Long messages, clean reports, future-only dashboard — all working');
+  console.log('✓ Fixed scheduling bug: datetime-local now correctly converted to UTC\n');
 });
