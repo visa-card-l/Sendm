@@ -11,6 +11,12 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ==================== DYNAMIC SERVER LIMITS (CONTROLLED VIA /admin-limits) ====================
+let DAILY_BROADCAST_LIMIT = 3;
+let MAX_LANDING_PAGES = 5;
+let MAX_FORMS = 5;
+// ==============================================================================================
+
 // Middleware
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views')); // <-- EJS views directory
@@ -31,6 +37,9 @@ const formPages = new Map();
 const allSubmissions = new Map();
 const pendingSubscribers = new Map();
 
+// Daily broadcast tracking
+const userBroadcastDaily = new Map();
+
 // Broadcast config
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 15000;
@@ -42,9 +51,6 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const BROADCASTS_FILE = path.join(DATA_DIR, 'scheduled_broadcasts.json');
 let scheduledBroadcasts = new Map();
-
-// We no longer need per-broadcast timeouts
-// const scheduledTimeouts = new Map();  <-- REMOVED
 
 // ======================== UTILITIES ========================
 
@@ -139,6 +145,10 @@ function escapeHtml(unsafe) {
   return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
+function getTodayDateString() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 // ======================== PERSISTENCE ========================
 
 function loadScheduledBroadcasts() {
@@ -176,7 +186,7 @@ async function executeScheduledBroadcast(broadcastId) {
   if (result.error) {
     reportText += `<b>Failed to send</b>\n${escapeHtml(result.error)}`;
   } else {
-    const statusEmoji = result.failed === 0 ? '' : '';
+    const statusEmoji = result.failed === 0 ? '✅' : '⚠️';
     reportText += statusEmoji + ' <b>' + result.sent + ' of ' + result.total + '</b> contacts received the message.\n';
     if (result.failed > 0) {
       reportText += '' + result.failed + ' failed to deliver.';
@@ -528,7 +538,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   res.json({ success: true, message: 'Password reset successful' });
 });
 
-// ======================== PAGES ROUTES ========================
+// ======================== PAGES ROUTES (WITH DYNAMIC LIMIT) ========================
 
 app.get('/api/pages', authenticateToken, (req, res) => {
   const pages = Array.from(landingPages.entries())
@@ -538,6 +548,13 @@ app.get('/api/pages', authenticateToken, (req, res) => {
 });
 
 app.post('/api/pages/save', authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+  const currentCount = Array.from(landingPages.values()).filter(p => p.userId === userId).length;
+
+  if (currentCount >= MAX_LANDING_PAGES) {
+    return res.status(403).json({ error: `Limit reached: Maximum ${MAX_LANDING_PAGES} landing pages allowed.` });
+  }
+
   const { shortId, title, config } = req.body;
   if (!title || !config || !Array.isArray(config.blocks)) return res.status(400).json({ error: 'Title and config.blocks required' });
 
@@ -602,7 +619,7 @@ app.get('/api/page/:shortId', (req, res) => {
   res.json({ shortId: req.params.shortId, title: page.title, config: page.config });
 });
 
-// ======================== FORMS ROUTES ========================
+// ======================== FORMS ROUTES (WITH DYNAMIC LIMIT) ========================
 
 app.get('/api/forms', authenticateToken, (req, res) => {
   const forms = Array.from(formPages.entries())
@@ -612,6 +629,13 @@ app.get('/api/forms', authenticateToken, (req, res) => {
 });
 
 app.post('/api/forms/save', authenticateToken, (req, res) => {
+  const userId = req.user.userId;
+  const currentCount = Array.from(formPages.values()).filter(f => f.userId === userId).length;
+
+  if (currentCount >= MAX_FORMS) {
+    return res.status(403).json({ error: `Limit reached: Maximum ${MAX_FORMS} forms allowed.` });
+  }
+
   const { shortId, title, state } = req.body;
   if (!title || !state) return res.status(400).json({ error: 'Title and state required' });
 
@@ -721,11 +745,34 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
 });
 
-// ======================== BROADCAST ROUTES ========================
+// ======================== BROADCAST ROUTES (WITH DYNAMIC DAILY LIMIT) ========================
+
+function incrementDailyBroadcast(userId) {
+  const today = getTodayDateString();
+  const key = `\( {userId}_ \){today}`;
+  const current = userBroadcastDaily.get(key) || 0;
+  userBroadcastDaily.set(key, current + 1);
+  return current + 1;
+}
+
+// Clean old daily counts hourly
+setInterval(() => {
+  const today = getTodayDateString();
+  for (const key of userBroadcastDaily.keys()) {
+    if (!key.endsWith(today)) {
+      userBroadcastDaily.delete(key);
+    }
+  }
+}, 60 * 60 * 1000);
 
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
+
+  const todayCount = incrementDailyBroadcast(req.user.userId);
+  if (todayCount > DAILY_BROADCAST_LIMIT) {
+    return res.status(403).json({ error: `Daily limit reached: ${DAILY_BROADCAST_LIMIT} broadcasts per day.` });
+  }
 
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
   const result = await executeBroadcast(req.user.userId, sanitizedMessage);
@@ -740,12 +787,18 @@ app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
   const userId = req.user.userId;
 
   if (scheduledTime === 'now') {
+    const todayCount = incrementDailyBroadcast(userId);
+    if (todayCount > DAILY_BROADCAST_LIMIT) {
+      return res.status(403).json({ error: `Daily limit reached: ${DAILY_BROADCAST_LIMIT} broadcasts per day.` });
+    }
     executeBroadcast(userId, sanitizedMessage).then(result => res.json({ success: true, ...result, immediate: true }));
     return;
   }
 
   const time = new Date(scheduledTime);
   if (isNaN(time.getTime()) || time <= new Date()) return res.status(400).json({ error: 'Invalid future time' });
+
+  incrementDailyBroadcast(userId);
 
   const id = scheduleBroadcast(userId, sanitizedMessage, recipients, scheduledTime);
   res.json({ success: true, broadcastId: id, scheduledTime: time.toISOString() });
@@ -794,7 +847,6 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res)
     task.scheduledTime = newTime.getTime();
   }
 
-  // No setTimeout needed anymore — the checker will handle it
   scheduledBroadcasts.set(broadcastId, task);
   saveScheduledBroadcasts();
   res.json({ success: true, broadcastId, scheduledTime: new Date(task.scheduledTime).toISOString() });
@@ -825,6 +877,120 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req
   });
 });
 
+// ======================== OWNER-ONLY ADMIN LIMITS PAGE (PASSWORD: midas) ========================
+
+const ADMIN_PASSWORD = 'midas';
+
+app.get('/admin-limits', (req, res) => {
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Server Limits Control</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 500px; }
+    h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }
+    label { display: block; margin: 20px 0 8px; font-size: 1.1em; }
+    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }
+    button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; }
+    button:hover { background: #e6c200; }
+    .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Server Limits Control</h1>
+    <form method="POST">
+      <label>Owner Password</label>
+      <input type="password" name="password" required placeholder="Enter password">
+
+      <label>Daily Broadcasts per User</label>
+      <input type="number" name="daily_broadcast" min="1" value="${DAILY_BROADCAST_LIMIT}" required>
+
+      <label>Max Landing Pages per User</label>
+      <input type="number" name="max_pages" min="1" value="${MAX_LANDING_PAGES}" required>
+
+      <label>Max Forms per User</label>
+      <input type="number" name="max_forms" min="1" value="${MAX_FORMS}" required>
+
+      <div class="current">
+        <strong>Current Limits:</strong><br>
+        Broadcasts/day: \( {DAILY_BROADCAST_LIMIT} | Pages: \){MAX_LANDING_PAGES} | Forms: ${MAX_FORMS}
+      </div>
+
+      <button type="submit">Update Limits</button>
+    </form>
+  </div>
+</body>
+</html>
+  `;
+  res.send(html);
+});
+
+app.post('/admin-limits', (req, res) => {
+  const { password, daily_broadcast, max_pages, max_forms } = req.body;
+
+  if (password !== ADMIN_PASSWORD) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><style>body{background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;}</style></head>
+        <body><h1>Access Denied<br>Wrong Password</h1></body>
+      </html>
+    `);
+  }
+
+  const newDaily = parseInt(daily_broadcast);
+  const newPages = parseInt(max_pages);
+  const newForms = parseInt(max_forms);
+
+  if (isNaN(newDaily) || isNaN(newPages) || isNaN(newForms) || newDaily < 1 || newPages < 1 || newForms < 1) {
+    return res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><style>body{background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;}</style></head>
+        <body><h1>Invalid Values<br>All limits must be ≥ 1</h1></body>
+      </html>
+    `);
+  }
+
+  DAILY_BROADCAST_LIMIT = newDaily;
+  MAX_LANDING_PAGES = newPages;
+  MAX_FORMS = newForms;
+
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Limits Updated</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }
+    h1 { color: #4caf50; }
+    .success { font-size: 1.2em; margin: 20px 0; }
+    a { color: #ffd700; text-decoration: none; font-weight: bold; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Success!</h1>
+    <p class="success">Server limits updated successfully:</p>
+    <p><strong>Daily Broadcasts:</strong> ${DAILY_BROADCAST_LIMIT}<br>
+       <strong>Max Pages:</strong> ${MAX_LANDING_PAGES}<br>
+       <strong>Max Forms:</strong> ${MAX_FORMS}</p>
+    <p><a href="/admin-limits">← Back to Control Panel</a></p>
+  </div>
+</body>
+</html>
+  `);
+});
+
 // ======================== CLEANUP & SERVER START ========================
 
 setInterval(() => {
@@ -837,7 +1003,6 @@ setInterval(() => {
 loadScheduledBroadcasts();
 users.forEach(user => { if (user.telegramBotToken) launchUserBot(user); });
 
-// No need to clear timeouts on SIGTERM anymore since we don't use per-broadcast ones
 process.on('SIGTERM', () => {
   console.log('SIGTERM received - shutting down gracefully');
   process.exit(0);
@@ -846,9 +1011,9 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FINAL & CLEAN (EJS in /views)');
+  console.log('\nSENDEM SERVER — FULLY UPDATED WITH OWNER CONTROL');
   console.log(`Server running on http://localhost:${PORT}`);
-  console.log('All EJS templates moved to views/ directory');
-  console.log('All routes and logic preserved exactly');
-  console.log('Long-term scheduling now reliable with periodic checker (no more 25-day limit bug)\n');
+  console.log(`Owner limits panel: http://localhost:${PORT}/admin-limits`);
+  console.log(`Password: midas`);
+  console.log(`Current limits: \( {DAILY_BROADCAST_LIMIT} broadcasts/day | \){MAX_LANDING_PAGES} pages | ${MAX_FORMS} forms\n`);
 });
