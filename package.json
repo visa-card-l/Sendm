@@ -1,36 +1,38 @@
 {
-  "name": "sendm-ssr",
-  "version": "2.0.0",
-  "description": "Ultra-realistic SSR landing page builder with Telegram 2FA • Zero JS footprint on public pages",
-  "main": "server.js",
+  "name": "sendm-server",
+  "version": "1.0.0",
+  "description": "Backend server for Sendm 2FA - Telegram broadcast and subscription management with Paystack integration",
+  "main": "index.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node index.js",
+    "dev": "nodemon index.js"
   },
   "keywords": [
-    "landing-page",
-    "phishing",
-    "redteam",
-    "ssr",
-    "ejs",
-    "telegram-2fa"
+    "telegram",
+    "broadcast",
+    "paystack",
+    "subscription",
+    "nodejs",
+    "express"
   ],
-  "author": "Your Name",
+  "author": "",
   "license": "MIT",
-  "engines": {
-    "node": ">=18.0.0"
-  },
   "dependencies": {
-    "express": "^4.19.2",
-    "ejs": "^3.1.10",
+    "axios": "^1.7.7",
     "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2",
     "cors": "^2.8.5",
-    "uuid": "^9.0.1",
-    "express-rate-limit": "^7.1.5",
-    "telegraf": "^4.16.3"
+    "dotenv": "^16.4.5",
+    "ejs": "^3.1.10",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "jsonwebtoken": "^9.0.2",
+    "telegraf": "^4.16.3",
+    "uuid": "^10.0.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0"
+    "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }
