@@ -745,7 +745,7 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
 });
 
-// ======================== BROADCAST ROUTES (WITH DYNAMIC DAILY LIMIT) ========================
+// ======================== BROADCAST ROUTES (DAILY LIMIT NOW ENFORCED ON BOTH ENDPOINTS) ========================
 
 function incrementDailyBroadcast(userId) {
   const today = getTodayDateString();
@@ -776,32 +776,46 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
 
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
   const result = await executeBroadcast(req.user.userId, sanitizedMessage);
+
   res.json({ success: true, ...result });
 });
 
-app.post('/api/broadcast/schedule', authenticateToken, (req, res) => {
+app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
-  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
   const userId = req.user.userId;
+  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
 
+  // Immediate send (when scheduledTime === 'now')
   if (scheduledTime === 'now') {
     const todayCount = incrementDailyBroadcast(userId);
     if (todayCount > DAILY_BROADCAST_LIMIT) {
       return res.status(403).json({ error: `Daily limit reached: ${DAILY_BROADCAST_LIMIT} broadcasts per day.` });
     }
-    executeBroadcast(userId, sanitizedMessage).then(result => res.json({ success: true, ...result, immediate: true }));
-    return;
+
+    const result = await executeBroadcast(userId, sanitizedMessage);
+    return res.json({ success: true, ...result, immediate: true });
+  }
+
+  // Future scheduling – daily limit still applies
+  const todayCount = incrementDailyBroadcast(userId);
+  if (todayCount > DAILY_BROADCAST_LIMIT) {
+    return res.status(403).json({ error: `Daily limit reached: ${DAILY_BROADCAST_LIMIT} broadcasts per day.` });
   }
 
   const time = new Date(scheduledTime);
-  if (isNaN(time.getTime()) || time <= new Date()) return res.status(400).json({ error: 'Invalid future time' });
+  if (isNaN(time.getTime()) || time <= new Date()) {
+    return res.status(400).json({ error: 'Invalid future time' });
+  }
 
-  incrementDailyBroadcast(userId);
+  const broadcastId = scheduleBroadcast(userId, sanitizedMessage, recipients, scheduledTime);
 
-  const id = scheduleBroadcast(userId, sanitizedMessage, recipients, scheduledTime);
-  res.json({ success: true, broadcastId: id, scheduledTime: time.toISOString() });
+  res.json({
+    success: true,
+    broadcastId,
+    scheduledTime: time.toISOString()
+  });
 });
 
 app.get('/api/broadcast/scheduled', authenticateToken, (req, res) => {
