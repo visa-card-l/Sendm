@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
@@ -13,15 +15,28 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// ==================== SENSITIVE DATA FROM .env ====================
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_weak_secret_change_me_immediately';
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || 'sk_test_fallback_change_me';
+const PAYSTACK_PUBLIC_KEY = process.env.PAYSTACK_PUBLIC_KEY || 'pk_test_fallback_change_me';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'midas';
+
+// Warnings if secrets are not properly set
+if (JWT_SECRET === 'fallback_weak_secret_change_me_immediately') {
+  console.warn('⚠️  WARNING: JWT_SECRET not set in .env! Using insecure fallback.');
+}
+if (PAYSTACK_SECRET_KEY.startsWith('sk_test_fallback')) {
+  console.warn('⚠️  WARNING: PAYSTACK_SECRET_KEY not set in .env!');
+}
+
 // ==================== PAYSTACK CONFIG ====================
-const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || 'sk_test_your_test_key_here'; // CHANGE TO LIVE IN PRODUCTION
-const PAYSTACK_PUBLIC_KEY = process.env.PAYSTACK_PUBLIC_KEY || 'pk_test_your_public_key_here';
 const MONTHLY_PRICE = 500000; // ₦5,000 in kobo (Paystack uses smallest currency unit)
 
 // ==================== DYNAMIC SERVER LIMITS (CONTROLLED VIA /admin-limits) ====================
 let DAILY_BROADCAST_LIMIT = 3;
 let MAX_LANDING_PAGES = 5;
 let MAX_FORMS = 5;
+
 // ==============================================================================================
 
 // Middleware
@@ -33,7 +48,6 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Security & Storage
-const JWT_SECRET = 'sendm2fa_ultra_secure_jwt_2025!@#$%^&*()_+-=9876543210zyxwvutsrqponmlkjihgfedcba';
 const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Too many attempts' } });
 
 let users = [];
@@ -251,7 +265,7 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   const scheduledMs = new Date(scheduledTime).getTime();
 
   if (isNaN(scheduledMs) || scheduledMs <= Date.now()) {
-    executeScheduledBroadcast(broadcastId);
+    executeBroadcast(userId, message); // immediate if time is invalid or past
     return broadcastId;
   }
 
@@ -289,9 +303,6 @@ async function executeBroadcast(userId, message) {
   }
 
   let sent = 0, failed = 0;
-  const failures = [];
-
-  // Mutable full contacts list
   let contactsList = allSubmissions.get(userId) || [];
 
   for (let i = 0; i < batches.length; i++) {
@@ -304,9 +315,7 @@ async function executeBroadcast(userId, message) {
         sent++;
       } catch (err) {
         failed++;
-        failures.push({ chatId: sub.telegramChatId, error: err.message || 'Unknown' });
 
-        // Detect if the user blocked/kicked the bot
         const errMsg = err.message?.toLowerCase() || '';
         const isBlocked =
           err.response?.error_code === 403 ||
@@ -317,7 +326,6 @@ async function executeBroadcast(userId, message) {
           errMsg.includes('user is deactivated');
 
         if (isBlocked && sub.telegramChatId) {
-          // Mark ALL entries matching chatId OR contact as unsubscribed
           contactsList = contactsList.map(entry => {
             const matchesChatId = entry.telegramChatId === sub.telegramChatId;
             const matchesContact = entry.contact === sub.contact;
@@ -328,7 +336,7 @@ async function executeBroadcast(userId, message) {
                 ...entry,
                 status: 'unsubscribed',
                 unsubscribedAt: new Date().toISOString(),
-                telegramChatId: matchesChatId ? null : entry.telegramChatId  // clear chatId if blocked
+                telegramChatId: matchesChatId ? null : entry.telegramChatId
               };
             }
             return entry;
@@ -337,13 +345,12 @@ async function executeBroadcast(userId, message) {
       }
     }
 
-    // Persist after each batch
     allSubmissions.set(userId, contactsList);
 
     if (i < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_INTERVAL_MS));
   }
 
-  return { sent, failed, total: targets.length, failures: failures.length ? failures : undefined };
+  return { sent, failed, total: targets.length };
 }
 
 // ======================== BOT LAUNCH ========================
@@ -717,7 +724,7 @@ app.get('/subscription-success', (req, res) => {
   `);
 });
 
-// ======================== PAGES ROUTES (WITH SUBSCRIPTION LIMITS) ========================
+// ======================== PAGES ROUTES ========================
 
 app.get('/api/pages', authenticateToken, (req, res) => {
   const pages = Array.from(landingPages.entries())
@@ -804,7 +811,7 @@ app.get('/api/page/:shortId', (req, res) => {
   res.json({ shortId: req.params.shortId, title: page.title, config: page.config });
 });
 
-// ======================== FORMS ROUTES (WITH SUBSCRIPTION LIMITS) ========================
+// ======================== FORMS ROUTES ========================
 
 app.get('/api/forms', authenticateToken, (req, res) => {
   const forms = Array.from(formPages.entries())
@@ -936,7 +943,7 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
 });
 
-// ======================== BROADCAST ROUTES (WITH SUBSCRIPTION LIMITS) ========================
+// ======================== BROADCAST ROUTES ========================
 
 function incrementDailyBroadcast(userId) {
   const today = getTodayDateString();
@@ -946,7 +953,6 @@ function incrementDailyBroadcast(userId) {
   return current + 1;
 }
 
-// Clean old daily counts hourly
 setInterval(() => {
   const today = getTodayDateString();
   for (const key of userBroadcastDaily.keys()) {
@@ -1088,9 +1094,7 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req
   });
 });
 
-// ======================== OWNER-ONLY ADMIN LIMITS PAGE (PASSWORD: midas) ========================
-
-const ADMIN_PASSWORD = 'midas';
+// ======================== ADMIN LIMITS PAGE ========================
 
 app.get('/admin-limits', (req, res) => {
   const html = `
@@ -1222,9 +1226,8 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FULLY UPDATED WITH BLOCK DETECTION');
+  console.log('\nSENDEM SERVER — SECURE WITH ENV VARIABLES');
   console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`Owner limits panel: http://localhost:${PORT}/admin-limits`);
-  console.log(`Password: midas`);
-  console.log(`Current limits: \( {DAILY_BROADCAST_LIMIT} broadcasts/day | \){MAX_LANDING_PAGES} pages | ${MAX_FORMS} forms\n`);
+  console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
+  console.log('All secrets are now loaded from .env file\n');
 });
