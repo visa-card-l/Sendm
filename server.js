@@ -7,9 +7,16 @@ const rateLimit = require('express-rate-limit');
 const { Telegraf } = require('telegraf');
 const path = require('path');
 const fs = require('fs');
+const axios = require('axios');
+const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ==================== PAYSTACK CONFIG ====================
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || 'sk_test_your_test_key_here'; // CHANGE TO LIVE IN PRODUCTION
+const PAYSTACK_PUBLIC_KEY = process.env.PAYSTACK_PUBLIC_KEY || 'pk_test_your_public_key_here';
+const MONTHLY_PRICE = 500000; // ₦5,000 in kobo (Paystack uses smallest currency unit)
 
 // ==================== DYNAMIC SERVER LIMITS (CONTROLLED VIA /admin-limits) ====================
 let DAILY_BROADCAST_LIMIT = 3;
@@ -51,6 +58,27 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const BROADCASTS_FILE = path.join(DATA_DIR, 'scheduled_broadcasts.json');
 let scheduledBroadcasts = new Map();
+
+// ======================== SUBSCRIPTION HELPERS ========================
+
+function hasActiveSubscription(user) {
+  return user.isSubscribed && user.subscriptionEndDate && new Date(user.subscriptionEndDate) > new Date();
+}
+
+function getUserLimits(user) {
+  if (hasActiveSubscription(user)) {
+    return {
+      dailyBroadcasts: Infinity,
+      maxLandingPages: Infinity,
+      maxForms: Infinity
+    };
+  }
+  return {
+    dailyBroadcasts: DAILY_BROADCAST_LIMIT,
+    maxLandingPages: MAX_LANDING_PAGES,
+    maxForms: MAX_FORMS
+  };
+}
 
 // ======================== UTILITIES ========================
 
@@ -186,7 +214,7 @@ async function executeScheduledBroadcast(broadcastId) {
   if (result.error) {
     reportText += `<b>Failed to send</b>\n${escapeHtml(result.error)}`;
   } else {
-    const statusEmoji = result.failed === 0 ? '✅' : '⚠️';
+    const statusEmoji = result.failed === 0 ? '✓' : '⚠️';
     reportText += statusEmoji + ' <b>' + result.sent + ' of ' + result.total + '</b> contacts received the message.\n';
     if (result.failed > 0) {
       reportText += '' + result.failed + ' failed to deliver.';
@@ -409,7 +437,10 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
     telegramBotToken: null,
     telegramChatId: null,
     isTelegramConnected: false,
-    botUsername: null
+    botUsername: null,
+    isSubscribed: false,
+    subscriptionEndDate: null,
+    subscriptionPlan: null
   };
   users.push(newUser);
   const token = jwt.sign({ userId: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '7d' });
@@ -572,7 +603,121 @@ app.post('/api/auth/reset-password', async (req, res) => {
   res.json({ success: true, message: 'Password reset successful' });
 });
 
-// ======================== PAGES ROUTES (WITH DYNAMIC LIMIT) ========================
+// ======================== SUBSCRIPTION ROUTES ========================
+
+app.get('/api/subscription/status', authenticateToken, (req, res) => {
+  const user = users.find(u => u.id === req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const subscribed = hasActiveSubscription(user);
+  res.json({
+    subscribed,
+    plan: subscribed ? 'premium-monthly' : 'free',
+    endDate: user.subscriptionEndDate || null,
+    daysLeft: subscribed ? Math.ceil((new Date(user.subscriptionEndDate) - new Date()) / (1000 * 60 * 60 * 24)) : 0
+  });
+});
+
+app.post('/api/subscription/initiate', authenticateToken, async (req, res) => {
+  const user = users.find(u => u.id === req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  if (hasActiveSubscription(user)) {
+    return res.status(400).json({ error: 'You already have an active subscription' });
+  }
+
+  try {
+    const response = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
+        email: user.email,
+        amount: MONTHLY_PRICE,
+        currency: 'NGN',
+        callback_url: req.protocol + '://' + req.get('host') + '/subscription-success',
+        metadata: {
+          userId: user.id,
+          plan: 'premium-monthly'
+        }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    const { authorization_url, reference } = response.data.data;
+
+    user.pendingPaymentReference = reference;
+
+    res.json({
+      success: true,
+      authorizationUrl: authorization_url,
+      reference
+    });
+  } catch (error) {
+    console.error('Paystack init error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Failed to initialize payment' });
+  }
+});
+
+app.post('/api/subscription/webhook', (req, res) => {
+  const hash = crypto
+    .createHmac('sha512', PAYSTACK_SECRET_KEY)
+    .update(JSON.stringify(req.body))
+    .digest('hex');
+
+  if (hash !== req.headers['x-paystack-signature']) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  const event = req.body;
+
+  if (event.event === 'charge.success') {
+    const { reference, metadata } = event.data;
+    const { userId } = metadata;
+
+    const user = users.find(u => u.id === userId);
+    if (!user) {
+      console.error('Webhook: User not found for ID:', userId);
+      return res.status(200).send('OK');
+    }
+
+    if (user.pendingPaymentReference !== reference) {
+      console.warn('Webhook: Reference mismatch');
+      return res.status(200).send('OK');
+    }
+
+    const endDate = new Date();
+    endDate.setDate(endDate.getDate() + 30);
+
+    user.isSubscribed = true;
+    user.subscriptionEndDate = endDate.toISOString();
+    user.subscriptionPlan = 'premium-monthly';
+    delete user.pendingPaymentReference;
+
+    console.log(`Subscription activated for user: \( {user.email} until \){endDate}`);
+  }
+
+  res.status(200).send('OK');
+});
+
+app.get('/subscription-success', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html><head><title>Subscription Successful</title>
+    <style>body{font-family:sans-serif;background:#121212;color:#0f0;text-align:center;padding:100px;}</style>
+    </head>
+    <body>
+      <h1>✅ Subscription Successful!</h1>
+      <p>You now have unlimited broadcasts, pages, and forms.</p>
+      <p><a href="/" style="color:#ffd700;">← Back to Dashboard</a></p>
+    </body></html>
+  `);
+});
+
+// ======================== PAGES ROUTES (WITH SUBSCRIPTION LIMITS) ========================
 
 app.get('/api/pages', authenticateToken, (req, res) => {
   const pages = Array.from(landingPages.entries())
@@ -583,10 +728,16 @@ app.get('/api/pages', authenticateToken, (req, res) => {
 
 app.post('/api/pages/save', authenticateToken, (req, res) => {
   const userId = req.user.userId;
+  const user = users.find(u => u.id === userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const limits = getUserLimits(user);
   const currentCount = Array.from(landingPages.values()).filter(p => p.userId === userId).length;
 
-  if (currentCount >= MAX_LANDING_PAGES) {
-    return res.status(403).json({ error: `Limit reached: Maximum ${MAX_LANDING_PAGES} landing pages allowed.` });
+  if (currentCount >= limits.maxLandingPages) {
+    return res.status(403).json({ 
+      error: `Limit reached: Maximum ${limits.maxLandingPages === Infinity ? 'unlimited (subscribed)' : limits.maxLandingPages} landing pages allowed.` 
+    });
   }
 
   const { shortId, title, config } = req.body;
@@ -653,7 +804,7 @@ app.get('/api/page/:shortId', (req, res) => {
   res.json({ shortId: req.params.shortId, title: page.title, config: page.config });
 });
 
-// ======================== FORMS ROUTES (WITH DYNAMIC LIMIT) ========================
+// ======================== FORMS ROUTES (WITH SUBSCRIPTION LIMITS) ========================
 
 app.get('/api/forms', authenticateToken, (req, res) => {
   const forms = Array.from(formPages.entries())
@@ -664,10 +815,16 @@ app.get('/api/forms', authenticateToken, (req, res) => {
 
 app.post('/api/forms/save', authenticateToken, (req, res) => {
   const userId = req.user.userId;
+  const user = users.find(u => u.id === userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const limits = getUserLimits(user);
   const currentCount = Array.from(formPages.values()).filter(f => f.userId === userId).length;
 
-  if (currentCount >= MAX_FORMS) {
-    return res.status(403).json({ error: `Limit reached: Maximum ${MAX_FORMS} forms allowed.` });
+  if (currentCount >= limits.maxForms) {
+    return res.status(403).json({ 
+      error: `Limit reached: Maximum ${limits.maxForms === Infinity ? 'unlimited (subscribed)' : limits.maxForms} forms allowed.` 
+    });
   }
 
   const { shortId, title, state } = req.body;
@@ -779,7 +936,7 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
 });
 
-// ======================== BROADCAST ROUTES (DAILY LIMIT ENFORCED) ========================
+// ======================== BROADCAST ROUTES (WITH SUBSCRIPTION LIMITS) ========================
 
 function incrementDailyBroadcast(userId) {
   const today = getTodayDateString();
@@ -803,9 +960,16 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
+  const user = users.find(u => u.id === req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const limits = getUserLimits(user);
   const todayCount = incrementDailyBroadcast(req.user.userId);
-  if (todayCount > DAILY_BROADCAST_LIMIT) {
-    return res.status(403).json({ error: `Daily limit reached: ${DAILY_BROADCAST_LIMIT} broadcasts per day.` });
+
+  if (todayCount > limits.dailyBroadcasts) {
+    return res.status(403).json({ 
+      error: `Daily limit reached: ${limits.dailyBroadcasts === Infinity ? 'Unlimited (subscribed)' : limits.dailyBroadcasts} broadcasts per day.` 
+    });
   }
 
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
@@ -818,22 +982,23 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
-  const userId = req.user.userId;
+  const user = users.find(u => u.id === req.user.userId);
+  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const limits = getUserLimits(user);
+  const todayCount = incrementDailyBroadcast(req.user.userId);
+
+  if (todayCount > limits.dailyBroadcasts) {
+    return res.status(403).json({ 
+      error: `Daily limit reached: ${limits.dailyBroadcasts === Infinity ? 'Unlimited (subscribed)' : limits.dailyBroadcasts} broadcasts per day.` 
+    });
+  }
+
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
 
   if (scheduledTime === 'now') {
-    const todayCount = incrementDailyBroadcast(userId);
-    if (todayCount > DAILY_BROADCAST_LIMIT) {
-      return res.status(403).json({ error: `Daily limit reached: ${DAILY_BROADCAST_LIMIT} broadcasts per day.` });
-    }
-
-    const result = await executeBroadcast(userId, sanitizedMessage);
+    const result = await executeBroadcast(user.id, sanitizedMessage);
     return res.json({ success: true, ...result, immediate: true });
-  }
-
-  const todayCount = incrementDailyBroadcast(userId);
-  if (todayCount > DAILY_BROADCAST_LIMIT) {
-    return res.status(403).json({ error: `Daily limit reached: ${DAILY_BROADCAST_LIMIT} broadcasts per day.` });
   }
 
   const time = new Date(scheduledTime);
@@ -841,7 +1006,7 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Invalid future time' });
   }
 
-  const broadcastId = scheduleBroadcast(userId, sanitizedMessage, recipients, scheduledTime);
+  const broadcastId = scheduleBroadcast(user.id, sanitizedMessage, recipients, scheduledTime);
 
   res.json({
     success: true,
