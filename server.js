@@ -265,9 +265,13 @@ async function executeBroadcast(userId, message) {
   let sent = 0, failed = 0;
   const failures = [];
 
+  // Get mutable list to update unsubscribed contacts
+  let contactsList = allSubmissions.get(userId) || [];
+
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
     for (const sub of batch) {
+      let deliveryFailed = false;
       try {
         for (const chunk of numberedChunks) {
           await bot.telegram.sendMessage(sub.telegramChatId, chunk, { parse_mode: 'HTML' });
@@ -275,9 +279,36 @@ async function executeBroadcast(userId, message) {
         sent++;
       } catch (err) {
         failed++;
+        deliveryFailed = true;
         failures.push({ chatId: sub.telegramChatId, error: err.message || 'Unknown' });
+
+        // === NEW: Detect if user blocked the bot ===
+        const errMsg = err.message?.toLowerCase() || '';
+        const isBlocked = err.response?.error_code === 403 ||
+                          errMsg.includes('blocked') ||
+                          errMsg.includes('kicked') ||
+                          errMsg.includes('forbidden') ||
+                          errMsg.includes('chat not found'); // sometimes happens after block
+
+        if (isBlocked && sub.telegramChatId) {
+          // Mark this contact as unsubscribed
+          const index = contactsList.findIndex(c => c.telegramChatId === sub.telegramChatId);
+          if (index !== -1) {
+            contactsList[index] = {
+              ...contactsList[index],
+              status: 'unsubscribed',
+              unsubscribedAt: new Date().toISOString()
+            };
+          }
+        }
       }
     }
+
+    // Update the map after each batch (safe persistence)
+    if (contactsList !== allSubmissions.get(userId)) {
+      allSubmissions.set(userId, contactsList);
+    }
+
     if (i < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_INTERVAL_MS));
   }
 
