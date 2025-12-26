@@ -19,7 +19,7 @@ let MAX_FORMS = 5;
 
 // Middleware
 app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views')); // <-- EJS views directory
+app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -208,7 +208,7 @@ async function executeScheduledBroadcast(broadcastId) {
   saveScheduledBroadcasts();
 }
 
-// New: Reliable periodic checker (runs every minute)
+// Periodic checker (every minute)
 setInterval(() => {
   const now = Date.now();
   for (const [broadcastId, task] of scheduledBroadcasts.entries()) {
@@ -216,15 +216,13 @@ setInterval(() => {
       executeScheduledBroadcast(broadcastId);
     }
   }
-}, 60000); // Every 60 seconds
+}, 60000);
 
 function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   const broadcastId = uuidv4();
   const scheduledMs = new Date(scheduledTime).getTime();
 
-  // Immediate validation (same as before)
   if (isNaN(scheduledMs) || scheduledMs <= Date.now()) {
-    // If somehow invalid or past, execute now (shouldn't happen due to route validation)
     executeScheduledBroadcast(broadcastId);
     return broadcastId;
   }
@@ -245,7 +243,7 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   return broadcastId;
 }
 
-// ======================== BROADCAST SENDING ========================
+// ======================== BROADCAST SENDING (WITH BLOCK DETECTION & UNSUBSCRIBE) ========================
 
 async function executeBroadcast(userId, message) {
   const bot = activeBots.get(userId);
@@ -265,13 +263,12 @@ async function executeBroadcast(userId, message) {
   let sent = 0, failed = 0;
   const failures = [];
 
-  // Get mutable list to update unsubscribed contacts
+  // Mutable full contacts list
   let contactsList = allSubmissions.get(userId) || [];
 
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
     for (const sub of batch) {
-      let deliveryFailed = false;
       try {
         for (const chunk of numberedChunks) {
           await bot.telegram.sendMessage(sub.telegramChatId, chunk, { parse_mode: 'HTML' });
@@ -279,35 +276,41 @@ async function executeBroadcast(userId, message) {
         sent++;
       } catch (err) {
         failed++;
-        deliveryFailed = true;
         failures.push({ chatId: sub.telegramChatId, error: err.message || 'Unknown' });
 
-        // === NEW: Detect if user blocked the bot ===
+        // Detect if the user blocked/kicked the bot
         const errMsg = err.message?.toLowerCase() || '';
-        const isBlocked = err.response?.error_code === 403 ||
-                          errMsg.includes('blocked') ||
-                          errMsg.includes('kicked') ||
-                          errMsg.includes('forbidden') ||
-                          errMsg.includes('chat not found'); // sometimes happens after block
+        const isBlocked =
+          err.response?.error_code === 403 ||
+          errMsg.includes('blocked') ||
+          errMsg.includes('kicked') ||
+          errMsg.includes('forbidden') ||
+          errMsg.includes('chat not found') ||
+          errMsg.includes('user is deactivated');
 
         if (isBlocked && sub.telegramChatId) {
-          // Mark this contact as unsubscribed
-          const index = contactsList.findIndex(c => c.telegramChatId === sub.telegramChatId);
-          if (index !== -1) {
-            contactsList[index] = {
-              ...contactsList[index],
-              status: 'unsubscribed',
-              unsubscribedAt: new Date().toISOString()
-            };
-          }
+          // Mark ALL entries matching chatId OR contact as unsubscribed
+          contactsList = contactsList.map(entry => {
+            const matchesChatId = entry.telegramChatId === sub.telegramChatId;
+            const matchesContact = entry.contact === sub.contact;
+
+            if ((matchesChatId || matchesContact) &&
+                (entry.status === 'subscribed' || entry.status === 'pending')) {
+              return {
+                ...entry,
+                status: 'unsubscribed',
+                unsubscribedAt: new Date().toISOString(),
+                telegramChatId: matchesChatId ? null : entry.telegramChatId  // clear chatId if blocked
+              };
+            }
+            return entry;
+          });
         }
       }
     }
 
-    // Update the map after each batch (safe persistence)
-    if (contactsList !== allSubmissions.get(userId)) {
-      allSubmissions.set(userId, contactsList);
-    }
+    // Persist after each batch
+    allSubmissions.set(userId, contactsList);
 
     if (i < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_INTERVAL_MS));
   }
@@ -776,7 +779,7 @@ app.post('/api/contacts/delete', authenticateToken, (req, res) => {
   res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
 });
 
-// ======================== BROADCAST ROUTES (DAILY LIMIT NOW ENFORCED ON BOTH ENDPOINTS) ========================
+// ======================== BROADCAST ROUTES (DAILY LIMIT ENFORCED) ========================
 
 function incrementDailyBroadcast(userId) {
   const today = getTodayDateString();
@@ -818,7 +821,6 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
   const userId = req.user.userId;
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
 
-  // Immediate send (when scheduledTime === 'now')
   if (scheduledTime === 'now') {
     const todayCount = incrementDailyBroadcast(userId);
     if (todayCount > DAILY_BROADCAST_LIMIT) {
@@ -829,7 +831,6 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
     return res.json({ success: true, ...result, immediate: true });
   }
 
-  // Future scheduling – daily limit still applies
   const todayCount = incrementDailyBroadcast(userId);
   if (todayCount > DAILY_BROADCAST_LIMIT) {
     return res.status(403).json({ error: `Daily limit reached: ${DAILY_BROADCAST_LIMIT} broadcasts per day.` });
@@ -1056,7 +1057,7 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FULLY UPDATED WITH OWNER CONTROL');
+  console.log('\nSENDEM SERVER — FULLY UPDATED WITH BLOCK DETECTION');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Owner limits panel: http://localhost:${PORT}/admin-limits`);
   console.log(`Password: midas`);
