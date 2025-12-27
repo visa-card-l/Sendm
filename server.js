@@ -328,7 +328,7 @@ async function executeBroadcast(userId, message, broadcastId = null) {
           if (isLast && broadcastId) {
             options.reply_markup = {
               inline_keyboard: [[
-                { text: '📖 Read More', callback_data: 'readmore_' + broadcastId }
+                { text: '📖 Read More', callback_data: `readmore_\( {userId}_ \){broadcastId}` }
               ]]
             };
           }
@@ -461,11 +461,35 @@ function launchUserBot(user) {
     const chatId = ctx.callbackQuery.from.id.toString();
 
     if (data && data.startsWith('readmore_')) {
-      const broadcastId = data.substring(9);
+      const parts = data.split('_');
+      if (parts.length !== 3) {
+        await ctx.answerCbQuery();
+        return;
+      }
 
-      let engaged = broadcastEngagements.get(broadcastId) || new Set();
-      engaged.add(chatId);
-      broadcastEngagements.set(broadcastId, engaged);
+      const userId = parts[1];
+      const broadcastId = parts[2];
+
+      // Record the engagement in the Set
+      let engagedSet = broadcastEngagements.get(broadcastId) || new Set();
+      const wasNewEngagement = !engagedSet.has(chatId);
+      engagedSet.add(chatId);
+      broadcastEngagements.set(broadcastId, engagedSet);
+
+      // Only update history if this is a brand new tap (prevents double-counting)
+      if (wasNewEngagement) {
+        let userHistory = broadcastHistory.get(userId) || [];
+        const historyEntry = userHistory.find(entry => entry.broadcastId === broadcastId);
+
+        if (historyEntry) {
+          historyEntry.engaged += 1;
+          historyEntry.engagementRate = historyEntry.delivered > 0
+            ? Math.round((historyEntry.engaged / historyEntry.delivered) * 100)
+            : 0;
+
+          broadcastHistory.set(userId, userHistory);
+        }
+      }
 
       await ctx.replyWithHTML('<b>Thank you for reading!</b>');
     }
@@ -1298,7 +1322,7 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — NOW WITH READ MORE TRACKING & RECENT BROADCASTS');
+  console.log('\nSENDEM SERVER — NOW WITH REAL-TIME READ MORE ENGAGEMENT TRACKING');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
   console.log('All secrets are now loaded from .env file\n');
