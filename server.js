@@ -30,9 +30,9 @@ if (PAYSTACK_SECRET_KEY.startsWith('sk_test_fallback')) {
 }
 
 // ==================== PAYSTACK CONFIG ====================
-const MONTHLY_PRICE = 500000; // ₦5,000 in kobo (Paystack uses smallest currency unit)
+const MONTHLY_PRICE = 500000; // ₦5,000 in kobo
 
-// ==================== DYNAMIC SERVER LIMITS (CONTROLLED VIA /admin-limits) ====================
+// ==================== DYNAMIC SERVER LIMITS ====================
 let DAILY_BROADCAST_LIMIT = 3;
 let MAX_LANDING_PAGES = 5;
 let MAX_FORMS = 5;
@@ -60,6 +60,10 @@ const pendingSubscribers = new Map();
 
 // Daily broadcast tracking
 const userBroadcastDaily = new Map();
+
+// NEW: Engagement & History Tracking
+const broadcastEngagements = new Map(); // broadcastId → Set of chatIds that tapped "Read More"
+const broadcastHistory = new Map();     // userId → array of past broadcasts (newest first)
 
 // Broadcast config
 const BATCH_SIZE = 25;
@@ -221,7 +225,7 @@ async function executeScheduledBroadcast(broadcastId) {
   const task = scheduledBroadcasts.get(broadcastId);
   if (!task || task.status !== 'pending') return;
 
-  const result = await executeBroadcast(task.userId, task.message);
+  const result = await executeBroadcast(task.userId, task.message, broadcastId);
 
   let reportText = `<b>Scheduled Broadcast Report</b>\n\n`;
 
@@ -231,7 +235,14 @@ async function executeScheduledBroadcast(broadcastId) {
     const statusEmoji = result.failed === 0 ? '✓' : '⚠️';
     reportText += statusEmoji + ' <b>' + result.sent + ' of ' + result.total + '</b> contacts received the message.\n';
     if (result.failed > 0) {
-      reportText += '' + result.failed + ' failed to deliver.';
+      reportText += '' + result.failed + ' failed to deliver.\n';
+    }
+
+    const engagedSet = broadcastEngagements.get(broadcastId);
+    const engagedCount = engagedSet ? engagedSet.size : 0;
+    if (engagedCount > 0) {
+      const rate = Math.round((engagedCount / result.sent) * 100);
+      reportText += `\n📖 <b>\( {engagedCount}</b> tapped “Read More” (<b> \){rate}%</b> engagement)`;
     }
   }
 
@@ -265,7 +276,7 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   const scheduledMs = new Date(scheduledTime).getTime();
 
   if (isNaN(scheduledMs) || scheduledMs <= Date.now()) {
-    executeBroadcast(userId, message); // immediate if time is invalid or past
+    executeBroadcast(userId, message, broadcastId);
     return broadcastId;
   }
 
@@ -285,13 +296,15 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   return broadcastId;
 }
 
-// ======================== BROADCAST SENDING (WITH BLOCK DETECTION & UNSUBSCRIBE) ========================
+// ======================== BROADCAST SENDING WITH READ MORE BUTTON ========================
 
-async function executeBroadcast(userId, message) {
-  const bot = activeBots.get(userId);
-  if (!bot || !bot.telegram) return { sent: 0, failed: 0, total: 0, error: 'Bot not connected' };
+async function executeBroadcast(userId, message, broadcastId = null) {
+  const botEntry = activeBots.get(userId);
+  if (!botEntry || !botEntry.telegram) return { sent: 0, failed: 0, total: 0, error: 'Bot not connected' };
 
-  const sanitizedMessage = sanitizeTelegramHtml(message);
+  const bot = botEntry.telegram;
+
+  const sanitizedMessage = sanitizeTelegramHtml(message || '');
   const numberedChunks = splitTelegramMessage(sanitizedMessage);
 
   const targets = (allSubmissions.get(userId) || []).filter(s => s.status === 'subscribed' && s.telegramChatId);
@@ -309,8 +322,20 @@ async function executeBroadcast(userId, message) {
     const batch = batches[i];
     for (const sub of batch) {
       try {
-        for (const chunk of numberedChunks) {
-          await bot.telegram.sendMessage(sub.telegramChatId, chunk, { parse_mode: 'HTML' });
+        for (let j = 0; j < numberedChunks.length; j++) {
+          const chunk = numberedChunks[j];
+          const isLast = j === numberedChunks.length - 1;
+          const options = { parse_mode: 'HTML' };
+
+          if (isLast && broadcastId) {
+            options.reply_markup = {
+              inline_keyboard: [[
+                { text: '📖 Read More', callback_data: 'readmore_' + broadcastId }
+              ]]
+            };
+          }
+
+          await bot.telegram.sendMessage(sub.telegramChatId, chunk, options);
         }
         sent++;
       } catch (err) {
@@ -350,10 +375,35 @@ async function executeBroadcast(userId, message) {
     if (i < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_INTERVAL_MS));
   }
 
+  // Save to history
+  if (broadcastId) {
+    let userHistory = broadcastHistory.get(userId) || [];
+    const engagedSet = broadcastEngagements.get(broadcastId) || new Set();
+    const engagedCount = engagedSet.size;
+
+    const plainPreview = message.replace(/<[^>]*>/g, '').substring(0, 100) + (message.length > 100 ? '...' : '');
+
+    userHistory.unshift({
+      broadcastId,
+      sentAt: new Date().toISOString(),
+      messagePreview: plainPreview,
+      delivered: sent,
+      failed: failed,
+      total: targets.length,
+      engaged: engagedCount,
+      engagementRate: sent > 0 ? Math.round((engagedCount / sent) * 100) : 0
+    });
+
+    // Keep only last 50 broadcasts per user
+    if (userHistory.length > 50) userHistory = userHistory.slice(0, 50);
+
+    broadcastHistory.set(userId, userHistory);
+  }
+
   return { sent, failed, total: targets.length };
 }
 
-// ======================== BOT LAUNCH ========================
+// ======================== BOT LAUNCH WITH CALLBACK HANDLER ========================
 
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
@@ -410,9 +460,28 @@ function launchUserBot(user) {
 
   bot.command('status', ctx => ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>'));
 
+  // Handle "Read More" button taps
+  bot.on('callback_query', async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const chatId = ctx.callbackQuery.from.id.toString();
+
+    if (data && data.startsWith('readmore_')) {
+      const broadcastId = data.substring(9);
+
+      let engaged = broadcastEngagements.get(broadcastId) || new Set();
+      engaged.add(chatId);
+      broadcastEngagements.set(broadcastId, engaged);
+
+      // Optional response when user taps
+      await ctx.replyWithHTML(`<b>Thank you for reading!</b>\n\n(Full details or extra content can go here if you want)`);
+    }
+
+    await ctx.answerCbQuery();
+  });
+
   bot.catch(err => console.error('Bot error [' + user.email + ']:', err));
   bot.launch();
-  activeBots.set(user.id, bot);
+  activeBots.set(user.id, { telegram: bot.telegram, stop: bot.stop });
 }
 
 // ======================== JWT MIDDLEWARE ========================
@@ -426,6 +495,13 @@ const authenticateToken = (req, res, next) => {
     next();
   });
 };
+
+// ======================== NEW: Broadcast History API ========================
+
+app.get('/api/broadcast/history', authenticateToken, (req, res) => {
+  const history = broadcastHistory.get(req.user.userId) || [];
+  res.json({ success: true, history });
+});
 
 // ======================== AUTH ROUTES ========================
 
@@ -717,7 +793,7 @@ app.get('/subscription-success', (req, res) => {
     <style>body{font-family:sans-serif;background:#121212;color:#0f0;text-align:center;padding:100px;}</style>
     </head>
     <body>
-      <h1>✅ Subscription Successful!</h1>
+      <h1>✓ Subscription Successful!</h1>
       <p>You now have unlimited broadcasts, pages, and forms.</p>
       <p><a href="/" style="color:#ffd700;">← Back to Dashboard</a></p>
     </body></html>
@@ -979,7 +1055,8 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   }
 
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
-  const result = await executeBroadcast(req.user.userId, sanitizedMessage);
+  const broadcastId = uuidv4();
+  const result = await executeBroadcast(req.user.userId, sanitizedMessage, broadcastId);
 
   res.json({ success: true, ...result });
 });
@@ -1003,7 +1080,8 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
 
   if (scheduledTime === 'now') {
-    const result = await executeBroadcast(user.id, sanitizedMessage);
+    const broadcastId = uuidv4();
+    const result = await executeBroadcast(user.id, sanitizedMessage, broadcastId);
     return res.json({ success: true, ...result, immediate: true });
   }
 
@@ -1109,7 +1187,7 @@ app.get('/admin-limits', (req, res) => {
     .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 500px; }
     h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }
     label { display: block; margin: 20px 0 8px; font-size: 1.1em; }
-    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }
+    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1.1em; margin-bottom: 15px; }
     button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; }
     button:hover { background: #e6c200; }
     .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }
@@ -1226,7 +1304,7 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — SECURE WITH ENV VARIABLES');
+  console.log('\nSENDEM SERVER — NOW WITH READ MORE ENGAGEMENT TRACKING & DASHBOARD HISTORY');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
   console.log('All secrets are now loaded from .env file\n');
