@@ -299,10 +299,8 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
 // ======================== BROADCAST SENDING WITH READ MORE BUTTON ========================
 
 async function executeBroadcast(userId, message, broadcastId = null) {
-  const botEntry = activeBots.get(userId);
-  if (!botEntry || !botEntry.telegram) return { sent: 0, failed: 0, total: 0, error: 'Bot not connected' };
-
-  const bot = botEntry.telegram;
+  const bot = activeBots.get(userId);
+  if (!bot || !bot.telegram) return { sent: 0, failed: 0, total: 0, error: 'Bot not connected' };
 
   const sanitizedMessage = sanitizeTelegramHtml(message || '');
   const numberedChunks = splitTelegramMessage(sanitizedMessage);
@@ -375,7 +373,6 @@ async function executeBroadcast(userId, message, broadcastId = null) {
     if (i < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_INTERVAL_MS));
   }
 
-  // Save to history
   if (broadcastId) {
     let userHistory = broadcastHistory.get(userId) || [];
     const engagedSet = broadcastEngagements.get(broadcastId) || new Set();
@@ -394,7 +391,6 @@ async function executeBroadcast(userId, message, broadcastId = null) {
       engagementRate: sent > 0 ? Math.round((engagedCount / sent) * 100) : 0
     });
 
-    // Keep only last 50 broadcasts per user
     if (userHistory.length > 50) userHistory = userHistory.slice(0, 50);
 
     broadcastHistory.set(userId, userHistory);
@@ -460,7 +456,6 @@ function launchUserBot(user) {
 
   bot.command('status', ctx => ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>'));
 
-  // Handle "Read More" button taps
   bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery.data;
     const chatId = ctx.callbackQuery.from.id.toString();
@@ -472,8 +467,7 @@ function launchUserBot(user) {
       engaged.add(chatId);
       broadcastEngagements.set(broadcastId, engaged);
 
-      // Optional response when user taps
-      await ctx.replyWithHTML(`<b>Thank you for reading!</b>\n\n(Full details or extra content can go here if you want)`);
+      await ctx.replyWithHTML('<b>Thank you for reading!</b>');
     }
 
     await ctx.answerCbQuery();
@@ -481,7 +475,7 @@ function launchUserBot(user) {
 
   bot.catch(err => console.error('Bot error [' + user.email + ']:', err));
   bot.launch();
-  activeBots.set(user.id, { telegram: bot.telegram, stop: bot.stop });
+  activeBots.set(user.id, bot);
 }
 
 // ======================== JWT MIDDLEWARE ========================
@@ -1304,7 +1298,7 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — NOW WITH READ MORE ENGAGEMENT TRACKING & DASHBOARD HISTORY');
+  console.log('\nSENDEM SERVER — NOW WITH READ MORE TRACKING & RECENT BROADCASTS');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
   console.log('All secrets are now loaded from .env file\n');
