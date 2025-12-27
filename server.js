@@ -61,7 +61,7 @@ const pendingSubscribers = new Map();
 // Daily broadcast tracking
 const userBroadcastDaily = new Map();
 
-// SINGLE SOURCE OF TRUTH FOR BROADCASTS — JUST LIKE CONTACTS
+// SINGLE SOURCE OF TRUTH FOR BROADCASTS
 const broadcastRecords = new Map(); // broadcastId → full record
 
 // Broadcast config
@@ -294,7 +294,7 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   return broadcastId;
 }
 
-// ======================== BROADCAST SENDING - SINGLE SOURCE OF TRUTH ========================
+// ======================== BROADCAST SENDING ========================
 
 async function executeBroadcast(userId, message, broadcastId = null) {
   const bot = activeBots.get(userId);
@@ -371,7 +371,7 @@ async function executeBroadcast(userId, message, broadcastId = null) {
     if (i < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_INTERVAL_MS));
   }
 
-  // FINAL UPDATE: DELIVERY STATS
+  // UPDATE BROADCAST RECORD — DO NOT PRE-CALCULATE ENGAGEMENT RATE
   if (broadcastId) {
     let record = broadcastRecords.get(broadcastId);
     if (!record) {
@@ -391,7 +391,6 @@ async function executeBroadcast(userId, message, broadcastId = null) {
     record.delivered = sent;
     record.failed = failed;
     record.total = targets.length;
-    record.engagementRate = sent > 0 ? Math.round((record.engaged / sent) * 100) : 0;
 
     broadcastRecords.set(broadcastId, record);
   }
@@ -399,7 +398,7 @@ async function executeBroadcast(userId, message, broadcastId = null) {
   return { sent, failed, total: targets.length };
 }
 
-// ======================== BOT LAUNCH - ENGAGEMENT FIXED ========================
+// ======================== BOT LAUNCH - ENGAGEMENT TRACKING ========================
 
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
@@ -456,7 +455,6 @@ function launchUserBot(user) {
 
   bot.command('status', ctx => ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>'));
 
-  // ENGAGEMENT CALLBACK — UPDATES SAME RECORD
   bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery.data;
     const chatId = ctx.callbackQuery.from.id.toString();
@@ -486,15 +484,15 @@ function launchUserBot(user) {
           failed: 0,
           total: 0,
         };
+        broadcastRecords.set(broadcastId, record);
       }
 
       if (!record.engagedSet.has(chatId)) {
         record.engagedSet.add(chatId);
         record.engaged += 1;
-        record.engagementRate = record.delivered > 0 ? Math.round((record.engaged / record.delivered) * 100) : 0;
-
         broadcastRecords.set(broadcastId, record);
-        console.log(`ENGAGEMENT RECORDED: \( {broadcastId} → \){record.engaged} taps (${record.engagementRate}%)`);
+
+        console.log(`ENGAGEMENT RECORDED: \( {broadcastId} → \){record.engaged} taps`);
       }
 
       await ctx.replyWithHTML('<b>Thank you for reading!</b>');
@@ -520,21 +518,27 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// ======================== BROADCAST HISTORY API ========================
+// ======================== BROADCAST HISTORY API — DYNAMIC ENGAGEMENT RATE ========================
 
 app.get('/api/broadcast/history', authenticateToken, (req, res) => {
   const history = Array.from(broadcastRecords.values())
     .filter(r => r.userId === req.user.userId)
-    .map(r => ({
-      broadcastId: r.broadcastId,
-      sentAt: r.sentAt,
-      messagePreview: r.messagePreview,
-      delivered: r.delivered || 0,
-      failed: r.failed || 0,
-      total: r.total || 0,
-      engaged: r.engaged || 0,
-      engagementRate: r.engagementRate || 0
-    }))
+    .map(r => {
+      const delivered = r.delivered || 0;
+      const engaged = r.engaged || 0;
+      const engagementRate = delivered > 0 ? Math.round((engaged / delivered) * 100) : 0;
+
+      return {
+        broadcastId: r.broadcastId,
+        sentAt: r.sentAt,
+        messagePreview: r.messagePreview,
+        delivered,
+        failed: r.failed || 0,
+        total: r.total || 0,
+        engaged,
+        engagementRate
+      };
+    })
     .sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt))
     .slice(0, 50);
 
@@ -1342,8 +1346,8 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — ENGAGEMENT TRACKING FIXED & WORKING PERFECTLY');
+  console.log('\nSENDEM SERVER — ENGAGEMENT TRACKING FIXED & FULLY ROBUST');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
-  console.log('All routes preserved. Engagement now works exactly like contacts.\n');
+  console.log('All routes included. Engagement rate now calculated dynamically → always accurate.\n');
 });
