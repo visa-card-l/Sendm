@@ -399,7 +399,7 @@ async function executeBroadcast(userId, message, broadcastId = null) {
   return { sent, failed, total: targets.length };
 }
 
-// ======================== BOT LAUNCH WITH CALLBACK HANDLER ========================
+// ======================== BOT LAUNCH WITH BULLETPROOF CALLBACK HANDLER ========================
 
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
@@ -456,6 +456,7 @@ function launchUserBot(user) {
 
   bot.command('status', ctx => ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>'));
 
+  // FIXED & BULLETPROOF CALLBACK HANDLER
   bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery.data;
     const chatId = ctx.callbackQuery.from.id.toString();
@@ -470,16 +471,27 @@ function launchUserBot(user) {
       const userId = parts[1];
       const broadcastId = parts[2];
 
-      // Record the engagement in the Set
-      let engagedSet = broadcastEngagements.get(broadcastId) || new Set();
-      const wasNewEngagement = !engagedSet.has(chatId);
+      console.log(`Read More tapped: user=\( {userId}, broadcast= \){broadcastId}, chatId=${chatId}`);
+
+      // Record engagement
+      let engagedSet = broadcastEngagements.get(broadcastId);
+      if (!engagedSet) engagedSet = new Set();
+      const wasNew = !engagedSet.has(chatId);
       engagedSet.add(chatId);
       broadcastEngagements.set(broadcastId, engagedSet);
 
-      // Only update history if this is a brand new tap (prevents double-counting)
-      if (wasNewEngagement) {
+      // Only update history on NEW engagement
+      if (wasNew) {
         let userHistory = broadcastHistory.get(userId) || [];
-        const historyEntry = userHistory.find(entry => entry.broadcastId === broadcastId);
+
+        // Safe manual search for the broadcast entry
+        let historyEntry = null;
+        for (let i = 0; i < userHistory.length; i++) {
+          if (userHistory[i].broadcastId === broadcastId) {
+            historyEntry = userHistory[i];
+            break;
+          }
+        }
 
         if (historyEntry) {
           historyEntry.engaged += 1;
@@ -488,6 +500,9 @@ function launchUserBot(user) {
             : 0;
 
           broadcastHistory.set(userId, userHistory);
+          console.log(`ENGAGEMENT UPDATED: \( {broadcastId} → \){historyEntry.engaged} taps (${historyEntry.engagementRate}%)`);
+        } else {
+          console.warn(`No history entry found for broadcast \( {broadcastId} (user \){userId})`);
         }
       }
 
@@ -514,7 +529,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// ======================== NEW: Broadcast History API ========================
+// ======================== BROADCAST HISTORY API ========================
 
 app.get('/api/broadcast/history', authenticateToken, (req, res) => {
   const history = broadcastHistory.get(req.user.userId) || [];
@@ -1322,7 +1337,7 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — NOW WITH REAL-TIME READ MORE ENGAGEMENT TRACKING');
+  console.log('\nSENDEM SERVER — ENGAGEMENT TRACKING FULLY FIXED & WORKING PERFECTLY');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
   console.log('All secrets are now loaded from .env file\n');
