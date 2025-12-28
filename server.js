@@ -394,23 +394,17 @@ function launchUserBot(user) {
 
         pendingSubscribers.delete(payload);
 
-        // === CUSTOM WELCOME MESSAGE LOGIC ===
+        // === CUSTOM WELCOME MESSAGE ===
         const form = formPages.get(sub.shortId);
         let welcomeText = '<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you';
 
-        if (form && form.welcomeMessage && form.welcomeMessage.trim()) {
-          let custom = form.welcomeMessage
-            .replace(/\{name\}/gi, escapeHtml(sub.name))
+        if (form && form.state && form.state.welcomeMessage && form.state.welcomeMessage.trim()) {
+          welcomeText = form.state.welcomeMessage
+            .replace(/\{name\}/gi, '<b>' + escapeHtml(sub.name) + '</b>')
             .replace(/\{contact\}/gi, escapeHtml(sub.contact));
-
-          const chunks = splitTelegramMessage(custom);
-          for (const chunk of chunks) {
-            await ctx.replyWithHTML(chunk);
-          }
-        } else {
-          await ctx.replyWithHTML(welcomeText);
         }
 
+        await ctx.replyWithHTML(welcomeText);
         return;
       }
     }
@@ -734,7 +728,7 @@ app.get('/subscription-success', (req, res) => {
     <style>body{font-family:sans-serif;background:#121212;color:#0f0;text-align:center;padding:100px;}</style>
     </head>
     <body>
-      <h1>✅ Subscription Successful!</h1>
+      <h1>✔ Subscription Successful!</h1>
       <p>You now have unlimited broadcasts, pages, and forms.</p>
       <p><a href="/" style="color:#ffd700;">← Back to Dashboard</a></p>
     </body></html>
@@ -851,18 +845,19 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
     });
   }
 
-  const { shortId, title, state, welcomeMessage } = req.body;
+  const { shortId, title, state } = req.body;
   if (!title || !state) return res.status(400).json({ error: 'Title and state required' });
 
   const sanitizedState = JSON.parse(JSON.stringify(state));
+
+  // Sanitize existing fields
   if (sanitizedState.headerText) sanitizedState.headerText = sanitizedState.headerText.replace(/<script.*?<\/script>/gi, '');
   if (sanitizedState.subheaderText) sanitizedState.subheaderText = sanitizedState.subheaderText.replace(/<script.*?<\/script>/gi, '');
   if (sanitizedState.buttonText) sanitizedState.buttonText = sanitizedState.buttonText.replace(/<script.*?<\/script>/gi, '');
 
-  let sanitizedWelcome = '';
-  if (typeof welcomeMessage === 'string') {
-    sanitizedWelcome = sanitizeTelegramHtml(welcomeMessage.trim());
-    if (sanitizedWelcome.length > 4000) sanitizedWelcome = sanitizedWelcome.substring(0, 4000) + '...';
+  // NEW: Sanitize and store custom welcome message (supports HTML)
+  if (sanitizedState.welcomeMessage) {
+    sanitizedState.welcomeMessage = sanitizeTelegramHtml(sanitizedState.welcomeMessage.trim());
   }
 
   const finalShortId = shortId || uuidv4().slice(0, 8);
@@ -872,7 +867,6 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
     userId: req.user.userId,
     title: title.trim(),
     state: sanitizedState,
-    welcomeMessage: sanitizedWelcome,
     createdAt: formPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
@@ -897,12 +891,7 @@ app.get('/f/:shortId', (req, res) => {
 app.get('/api/form/:shortId', (req, res) => {
   const form = formPages.get(req.params.shortId);
   if (!form) return res.status(404).json({ error: 'Form not found' });
-  res.json({ 
-    shortId: req.params.shortId, 
-    title: form.title, 
-    state: form.state,
-    welcomeMessage: form.welcomeMessage || ''
-  });
+  res.json({ shortId: req.params.shortId, title: form.title, state: form.state });
 });
 
 // ======================== SUBSCRIPTION & CONTACTS ========================
