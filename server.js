@@ -61,7 +61,7 @@ const pendingSubscribers = new Map();
 // Daily broadcast tracking
 const userBroadcastDaily = new Map();
 
-// FIXED: Engagement & History Tracking
+// FIXED: Real-time Engagement & History Tracking
 const broadcastEngagements = new Map(); // broadcastId → Set<chatId>
 const broadcastHistory = new Map();     // userId → Map<broadcastId, historyEntry>
 
@@ -373,7 +373,7 @@ async function executeBroadcast(userId, message, broadcastId = null) {
     if (i < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_INTERVAL_MS));
   }
 
-  // FIXED: Create or update history entry with live engagement
+  // Create history entry with live engagement support
   if (broadcastId) {
     let userHistoryMap = broadcastHistory.get(userId);
     if (!userHistoryMap) {
@@ -403,7 +403,7 @@ async function executeBroadcast(userId, message, broadcastId = null) {
   return { sent, failed, total: targets.length };
 }
 
-// ======================== BOT LAUNCH WITH BULLETPROOF CALLBACK HANDLER ========================
+// ======================== BOT LAUNCH WITH FIXED CALLBACK HANDLER ========================
 
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
@@ -460,7 +460,7 @@ function launchUserBot(user) {
 
   bot.command('status', ctx => ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>'));
 
-  // FIXED & ROBUST CALLBACK HANDLER
+  // Real-time engagement callback handler
   bot.on('callback_query', async (ctx) => {
     const data = ctx.callbackQuery.data;
     const chatId = ctx.callbackQuery.from.id.toString();
@@ -477,7 +477,6 @@ function launchUserBot(user) {
 
       console.log(`Read More tapped: user=\( {userId}, broadcast= \){broadcastId}, chatId=${chatId}`);
 
-      // Record unique engagement
       let engagedSet = broadcastEngagements.get(broadcastId);
       if (!engagedSet) {
         engagedSet = new Set();
@@ -486,7 +485,6 @@ function launchUserBot(user) {
       const wasNew = !engagedSet.has(chatId);
       engagedSet.add(chatId);
 
-      // Update history in real time if new tap
       if (wasNew) {
         const userHistoryMap = broadcastHistory.get(userId);
         if (userHistoryMap) {
@@ -497,7 +495,7 @@ function launchUserBot(user) {
               ? Math.round((historyEntry.engaged / historyEntry.delivered) * 100)
               : 0;
 
-            console.log(`ENGAGEMENT UPDATED: \( {broadcastId} → \){historyEntry.engaged} taps (${historyEntry.engagementRate}%)`);
+            console.log(`ENGAGEMENT UPDATED: \( {broadcastId} → \){historyEntry.engaged} (${historyEntry.engagementRate}%)`);
           }
         }
       }
@@ -510,7 +508,9 @@ function launchUserBot(user) {
 
   bot.catch(err => console.error('Bot error [' + user.email + ']:', err));
   bot.launch();
-  activeBots.set(user.id, { telegram: bot, stop: () => bot.stop() });
+
+  // FIXED: Store raw bot instance exactly like original working code
+  activeBots.set(user.id, bot);
 }
 
 // ======================== JWT MIDDLEWARE ========================
@@ -1339,7 +1339,7 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — ENGAGEMENT ANALYTICS NOW FULLY FIXED & REAL-TIME');
+  console.log('\nSENDEM SERVER — FULLY FIXED: REAL-TIME ENGAGEMENT + WORKING BROADCASTS');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
   console.log('All secrets are now loaded from .env file\n');
