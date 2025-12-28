@@ -30,9 +30,9 @@ if (PAYSTACK_SECRET_KEY.startsWith('sk_test_fallback')) {
 }
 
 // ==================== PAYSTACK CONFIG ====================
-const MONTHLY_PRICE = 500000; // ₦5,000 in kobo
+const MONTHLY_PRICE = 500000; // ₦5,000 in kobo (Paystack uses smallest currency unit)
 
-// ==================== DYNAMIC SERVER LIMITS ====================
+// ==================== DYNAMIC SERVER LIMITS (CONTROLLED VIA /admin-limits) ====================
 let DAILY_BROADCAST_LIMIT = 3;
 let MAX_LANDING_PAGES = 5;
 let MAX_FORMS = 5;
@@ -60,10 +60,6 @@ const pendingSubscribers = new Map();
 
 // Daily broadcast tracking
 const userBroadcastDaily = new Map();
-
-// FIXED: Real-time Engagement & History Tracking
-const broadcastEngagements = new Map(); // broadcastId → Set<chatId>
-const broadcastHistory = new Map();     // userId → Map<broadcastId, historyEntry>
 
 // Broadcast config
 const BATCH_SIZE = 25;
@@ -225,7 +221,7 @@ async function executeScheduledBroadcast(broadcastId) {
   const task = scheduledBroadcasts.get(broadcastId);
   if (!task || task.status !== 'pending') return;
 
-  const result = await executeBroadcast(task.userId, task.message, broadcastId);
+  const result = await executeBroadcast(task.userId, task.message);
 
   let reportText = `<b>Scheduled Broadcast Report</b>\n\n`;
 
@@ -235,14 +231,7 @@ async function executeScheduledBroadcast(broadcastId) {
     const statusEmoji = result.failed === 0 ? '✔' : '⚠️';
     reportText += statusEmoji + ' <b>' + result.sent + ' of ' + result.total + '</b> contacts received the message.\n';
     if (result.failed > 0) {
-      reportText += '' + result.failed + ' failed to deliver.\n';
-    }
-
-    const engagedSet = broadcastEngagements.get(broadcastId);
-    const engagedCount = engagedSet ? engagedSet.size : 0;
-    if (engagedCount > 0) {
-      const rate = Math.round((engagedCount / result.sent) * 100);
-      reportText += `\n📊 <b>\( {engagedCount}</b> tapped “Read More” (<b> \){rate}%</b> engagement)`;
+      reportText += '' + result.failed + ' failed to deliver.';
     }
   }
 
@@ -276,7 +265,7 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   const scheduledMs = new Date(scheduledTime).getTime();
 
   if (isNaN(scheduledMs) || scheduledMs <= Date.now()) {
-    executeBroadcast(userId, message, broadcastId);
+    executeBroadcast(userId, message); // immediate if time is invalid or past
     return broadcastId;
   }
 
@@ -296,13 +285,13 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   return broadcastId;
 }
 
-// ======================== BROADCAST SENDING WITH READ MORE BUTTON ========================
+// ======================== BROADCAST SENDING (WITH BLOCK DETECTION & UNSUBSCRIBE) ========================
 
-async function executeBroadcast(userId, message, broadcastId = null) {
+async function executeBroadcast(userId, message) {
   const bot = activeBots.get(userId);
   if (!bot || !bot.telegram) return { sent: 0, failed: 0, total: 0, error: 'Bot not connected' };
 
-  const sanitizedMessage = sanitizeTelegramHtml(message || '');
+  const sanitizedMessage = sanitizeTelegramHtml(message);
   const numberedChunks = splitTelegramMessage(sanitizedMessage);
 
   const targets = (allSubmissions.get(userId) || []).filter(s => s.status === 'subscribed' && s.telegramChatId);
@@ -320,20 +309,8 @@ async function executeBroadcast(userId, message, broadcastId = null) {
     const batch = batches[i];
     for (const sub of batch) {
       try {
-        for (let j = 0; j < numberedChunks.length; j++) {
-          const chunk = numberedChunks[j];
-          const isLast = j === numberedChunks.length - 1;
-          const options = { parse_mode: 'HTML' };
-
-          if (isLast && broadcastId) {
-            options.reply_markup = {
-              inline_keyboard: [[
-                { text: '📊 Read More', callback_data: `readmore_\( {userId}_ \){broadcastId}` }
-              ]]
-            };
-          }
-
-          await bot.telegram.sendMessage(sub.telegramChatId, chunk, options);
+        for (const chunk of numberedChunks) {
+          await bot.telegram.sendMessage(sub.telegramChatId, chunk, { parse_mode: 'HTML' });
         }
         sent++;
       } catch (err) {
@@ -373,37 +350,10 @@ async function executeBroadcast(userId, message, broadcastId = null) {
     if (i < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_INTERVAL_MS));
   }
 
-  // Create history entry with live engagement support
-  if (broadcastId) {
-    let userHistoryMap = broadcastHistory.get(userId);
-    if (!userHistoryMap) {
-      userHistoryMap = new Map();
-      broadcastHistory.set(userId, userHistoryMap);
-    }
-
-    const engagedSet = broadcastEngagements.get(broadcastId) || new Set();
-    const engagedCount = engagedSet.size;
-
-    const plainPreview = message.replace(/<[^>]*>/g, '').substring(0, 100) + (message.length > 100 ? '...' : '');
-
-    const historyEntry = {
-      broadcastId,
-      sentAt: new Date().toISOString(),
-      messagePreview: plainPreview,
-      delivered: sent,
-      failed: failed,
-      total: targets.length,
-      engaged: engagedCount,
-      engagementRate: sent > 0 ? Math.round((engagedCount / sent) * 100) : 0
-    };
-
-    userHistoryMap.set(broadcastId, historyEntry);
-  }
-
   return { sent, failed, total: targets.length };
 }
 
-// ======================== BOT LAUNCH WITH FIXED CALLBACK HANDLER ========================
+// ======================== BOT LAUNCH ========================
 
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
@@ -443,7 +393,24 @@ function launchUserBot(user) {
         }
 
         pendingSubscribers.delete(payload);
-        await ctx.replyWithHTML('<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you');
+
+        // === CUSTOM WELCOME MESSAGE LOGIC ===
+        const form = formPages.get(sub.shortId);
+        let welcomeText = '<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you';
+
+        if (form && form.welcomeMessage && form.welcomeMessage.trim()) {
+          let custom = form.welcomeMessage
+            .replace(/\{name\}/gi, escapeHtml(sub.name))
+            .replace(/\{contact\}/gi, escapeHtml(sub.contact));
+
+          const chunks = splitTelegramMessage(custom);
+          for (const chunk of chunks) {
+            await ctx.replyWithHTML(chunk);
+          }
+        } else {
+          await ctx.replyWithHTML(welcomeText);
+        }
+
         return;
       }
     }
@@ -460,56 +427,8 @@ function launchUserBot(user) {
 
   bot.command('status', ctx => ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>'));
 
-  // Real-time engagement callback handler
-  bot.on('callback_query', async (ctx) => {
-    const data = ctx.callbackQuery.data;
-    const chatId = ctx.callbackQuery.from.id.toString();
-
-    if (data && data.startsWith('readmore_')) {
-      const parts = data.split('_');
-      if (parts.length !== 3) {
-        await ctx.answerCbQuery();
-        return;
-      }
-
-      const userId = parts[1];
-      const broadcastId = parts[2];
-
-      console.log(`Read More tapped: user=\( {userId}, broadcast= \){broadcastId}, chatId=${chatId}`);
-
-      let engagedSet = broadcastEngagements.get(broadcastId);
-      if (!engagedSet) {
-        engagedSet = new Set();
-        broadcastEngagements.set(broadcastId, engagedSet);
-      }
-      const wasNew = !engagedSet.has(chatId);
-      engagedSet.add(chatId);
-
-      if (wasNew) {
-        const userHistoryMap = broadcastHistory.get(userId);
-        if (userHistoryMap) {
-          const historyEntry = userHistoryMap.get(broadcastId);
-          if (historyEntry) {
-            historyEntry.engaged += 1;
-            historyEntry.engagementRate = historyEntry.delivered > 0
-              ? Math.round((historyEntry.engaged / historyEntry.delivered) * 100)
-              : 0;
-
-            console.log(`ENGAGEMENT UPDATED: \( {broadcastId} → \){historyEntry.engaged} (${historyEntry.engagementRate}%)`);
-          }
-        }
-      }
-
-      await ctx.replyWithHTML('<b>Thank you for reading!</b>');
-    }
-
-    await ctx.answerCbQuery();
-  });
-
   bot.catch(err => console.error('Bot error [' + user.email + ']:', err));
   bot.launch();
-
-  // FIXED: Store raw bot instance exactly like original working code
   activeBots.set(user.id, bot);
 }
 
@@ -524,19 +443,6 @@ const authenticateToken = (req, res, next) => {
     next();
   });
 };
-
-// ======================== BROADCAST HISTORY API ========================
-
-app.get('/api/broadcast/history', authenticateToken, (req, res) => {
-  const userHistoryMap = broadcastHistory.get(req.user.userId);
-  const history = userHistoryMap
-    ? Array.from(userHistoryMap.values())
-        .sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt))
-        .slice(0, 50)
-    : [];
-
-  res.json({ success: true, history });
-});
 
 // ======================== AUTH ROUTES ========================
 
@@ -828,7 +734,7 @@ app.get('/subscription-success', (req, res) => {
     <style>body{font-family:sans-serif;background:#121212;color:#0f0;text-align:center;padding:100px;}</style>
     </head>
     <body>
-      <h1>✔ Subscription Successful!</h1>
+      <h1>✅ Subscription Successful!</h1>
       <p>You now have unlimited broadcasts, pages, and forms.</p>
       <p><a href="/" style="color:#ffd700;">← Back to Dashboard</a></p>
     </body></html>
@@ -945,13 +851,19 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
     });
   }
 
-  const { shortId, title, state } = req.body;
+  const { shortId, title, state, welcomeMessage } = req.body;
   if (!title || !state) return res.status(400).json({ error: 'Title and state required' });
 
   const sanitizedState = JSON.parse(JSON.stringify(state));
   if (sanitizedState.headerText) sanitizedState.headerText = sanitizedState.headerText.replace(/<script.*?<\/script>/gi, '');
   if (sanitizedState.subheaderText) sanitizedState.subheaderText = sanitizedState.subheaderText.replace(/<script.*?<\/script>/gi, '');
   if (sanitizedState.buttonText) sanitizedState.buttonText = sanitizedState.buttonText.replace(/<script.*?<\/script>/gi, '');
+
+  let sanitizedWelcome = '';
+  if (typeof welcomeMessage === 'string') {
+    sanitizedWelcome = sanitizeTelegramHtml(welcomeMessage.trim());
+    if (sanitizedWelcome.length > 4000) sanitizedWelcome = sanitizedWelcome.substring(0, 4000) + '...';
+  }
 
   const finalShortId = shortId || uuidv4().slice(0, 8);
   const now = new Date().toISOString();
@@ -960,6 +872,7 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
     userId: req.user.userId,
     title: title.trim(),
     state: sanitizedState,
+    welcomeMessage: sanitizedWelcome,
     createdAt: formPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
@@ -984,7 +897,12 @@ app.get('/f/:shortId', (req, res) => {
 app.get('/api/form/:shortId', (req, res) => {
   const form = formPages.get(req.params.shortId);
   if (!form) return res.status(404).json({ error: 'Form not found' });
-  res.json({ shortId: req.params.shortId, title: form.title, state: form.state });
+  res.json({ 
+    shortId: req.params.shortId, 
+    title: form.title, 
+    state: form.state,
+    welcomeMessage: form.welcomeMessage || ''
+  });
 });
 
 // ======================== SUBSCRIPTION & CONTACTS ========================
@@ -1090,8 +1008,7 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   }
 
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
-  const broadcastId = uuidv4();
-  const result = await executeBroadcast(req.user.userId, sanitizedMessage, broadcastId);
+  const result = await executeBroadcast(req.user.userId, sanitizedMessage);
 
   res.json({ success: true, ...result });
 });
@@ -1115,8 +1032,7 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
   const sanitizedMessage = sanitizeTelegramHtml(message.trim());
 
   if (scheduledTime === 'now') {
-    const broadcastId = uuidv4();
-    const result = await executeBroadcast(user.id, sanitizedMessage, broadcastId);
+    const result = await executeBroadcast(user.id, sanitizedMessage);
     return res.json({ success: true, ...result, immediate: true });
   }
 
@@ -1222,7 +1138,7 @@ app.get('/admin-limits', (req, res) => {
     .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 500px; }
     h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }
     label { display: block; margin: 20px 0 8px; font-size: 1.1em; }
-    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1.1em; margin-bottom: 15px; }
+    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }
     button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; }
     button:hover { background: #e6c200; }
     .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }
@@ -1339,7 +1255,7 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FULLY FIXED: REAL-TIME ENGAGEMENT + WORKING BROADCASTS');
+  console.log('\nSENDEM SERVER — SECURE WITH ENV VARIABLES');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
   console.log('All secrets are now loaded from .env file\n');
