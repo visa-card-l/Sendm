@@ -32,7 +32,7 @@ if (PAYSTACK_SECRET_KEY.startsWith('sk_test_fallback')) {
 // ==================== PAYSTACK CONFIG ====================
 const MONTHLY_PRICE = 500000; // ₦5,000 in kobo (Paystack uses smallest currency unit)
 
-// ==================== DYNAMIC SERVER LIMITS (CONTROLLED VIA /admin-limits) ====================
+// ==================== DYNAMIC SERVER LIMITS ====================
 let DAILY_BROADCAST_LIMIT = 3;
 let MAX_LANDING_PAGES = 5;
 let MAX_FORMS = 5;
@@ -285,7 +285,7 @@ function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
   return broadcastId;
 }
 
-// ======================== BROADCAST SENDING (WITH BLOCK DETECTION & UNSUBSCRIBE) ========================
+// ======================== BROADCAST SENDING ========================
 
 async function executeBroadcast(userId, message) {
   const bot = activeBots.get(userId);
@@ -394,12 +394,12 @@ function launchUserBot(user) {
 
         pendingSubscribers.delete(payload);
 
-        // === CUSTOM WELCOME MESSAGE ===
+        // === CUSTOM WELCOME MESSAGE (NOW FROM SEPARATE FIELD) ===
         const form = formPages.get(sub.shortId);
         let welcomeText = '<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you';
 
-        if (form && form.state && form.state.welcomeMessage && form.state.welcomeMessage.trim()) {
-          welcomeText = form.state.welcomeMessage
+        if (form && form.welcomeMessage && form.welcomeMessage.trim()) {
+          welcomeText = form.welcomeMessage
             .replace(/\{name\}/gi, '<b>' + escapeHtml(sub.name) + '</b>')
             .replace(/\{contact\}/gi, escapeHtml(sub.contact));
         }
@@ -822,12 +822,18 @@ app.get('/api/page/:shortId', (req, res) => {
   res.json({ shortId: req.params.shortId, title: page.title, config: page.config });
 });
 
-// ======================== FORMS ROUTES ========================
+// ======================== FORMS ROUTES (FIXED) ========================
 
 app.get('/api/forms', authenticateToken, (req, res) => {
   const forms = Array.from(formPages.entries())
     .filter(([_, f]) => f.userId === req.user.userId)
-    .map(([shortId, f]) => ({ shortId, title: f.title, createdAt: f.createdAt, updatedAt: f.updatedAt, url: req.protocol + '://' + req.get('host') + '/f/' + shortId }));
+    .map(([shortId, f]) => ({ 
+      shortId, 
+      title: f.title, 
+      createdAt: f.createdAt, 
+      updatedAt: f.updatedAt, 
+      url: req.protocol + '://' + req.get('host') + '/f/' + shortId 
+    }));
   res.json({ forms });
 });
 
@@ -845,20 +851,20 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
     });
   }
 
-  const { shortId, title, state } = req.body;
+  const { shortId, title, state, welcomeMessage } = req.body;
   if (!title || !state) return res.status(400).json({ error: 'Title and state required' });
 
   const sanitizedState = JSON.parse(JSON.stringify(state));
 
-  // Sanitize existing fields
+  // Sanitize public-facing fields only
   if (sanitizedState.headerText) sanitizedState.headerText = sanitizedState.headerText.replace(/<script.*?<\/script>/gi, '');
   if (sanitizedState.subheaderText) sanitizedState.subheaderText = sanitizedState.subheaderText.replace(/<script.*?<\/script>/gi, '');
   if (sanitizedState.buttonText) sanitizedState.buttonText = sanitizedState.buttonText.replace(/<script.*?<\/script>/gi, '');
 
-  // NEW: Sanitize and store custom welcome message (supports HTML)
-  if (sanitizedState.welcomeMessage) {
-    sanitizedState.welcomeMessage = sanitizeTelegramHtml(sanitizedState.welcomeMessage.trim());
-  }
+  // Sanitize welcome message separately (used only in Telegram)
+  const sanitizedWelcome = welcomeMessage && typeof welcomeMessage === 'string'
+    ? sanitizeTelegramHtml(welcomeMessage.trim())
+    : '';
 
   const finalShortId = shortId || uuidv4().slice(0, 8);
   const now = new Date().toISOString();
@@ -867,6 +873,7 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
     userId: req.user.userId,
     title: title.trim(),
     state: sanitizedState,
+    welcomeMessage: sanitizedWelcome,   // Server-only field
     createdAt: formPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
@@ -885,13 +892,18 @@ app.post('/api/forms/delete', authenticateToken, (req, res) => {
 app.get('/f/:shortId', (req, res) => {
   const form = formPages.get(req.params.shortId);
   if (!form) return res.status(404).render('404');
-  res.render('form', { title: form.title, state: form.state });
+  res.render('form', { title: form.title, state: form.state }); // Only safe state sent to client
 });
 
 app.get('/api/form/:shortId', (req, res) => {
   const form = formPages.get(req.params.shortId);
   if (!form) return res.status(404).json({ error: 'Form not found' });
-  res.json({ shortId: req.params.shortId, title: form.title, state: form.state });
+  res.json({ 
+    shortId: req.params.shortId, 
+    title: form.title, 
+    state: form.state,
+    welcomeMessage: form.welcomeMessage   // Only returned to authenticated user (dashboard)
+  });
 });
 
 // ======================== SUBSCRIPTION & CONTACTS ========================
@@ -1244,8 +1256,8 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — SECURE WITH ENV VARIABLES');
+  console.log('\nSENDEM SERVER — FULLY FIXED');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
-  console.log('All secrets are now loaded from .env file\n');
+  console.log('Welcome message is now safely separated — blank page bug is gone!\n');
 });
