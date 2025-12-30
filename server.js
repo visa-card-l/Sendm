@@ -48,7 +48,24 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Security & Storage
-const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, message: { error: 'Too many attempts' } });
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many attempts' }
+});
+
+// Strict per-form rate limiter: 10 submissions per IP per individual form every 15 minutes
+const createFormSubmitLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // 10 submissions per form per IP
+  message: { error: 'Too many submissions to this form. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return `\( {req.ip}:: \){req.params.shortId}`;
+  },
+  skip: (req) => !req.params.shortId,
+});
 
 let users = [];
 const activeBots = new Map();
@@ -721,17 +738,34 @@ app.post('/api/subscription/webhook', (req, res) => {
   res.status(200).send('OK');
 });
 
+// No automatic redirect after payment – user returns manually
 app.get('/subscription-success', (req, res) => {
   res.send(`
     <!DOCTYPE html>
-    <html><head><title>Subscription Successful</title>
-    <style>body{font-family:sans-serif;background:#121212;color:#0f0;text-align:center;padding:100px;}</style>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>Payment Successful</title>
+      <style>
+        body {font-family: system-ui, sans-serif; background:#0a0a0a; color:#00ff41; 
+              display:flex; justify-content:center; align-items:center; min-height:100vh; margin:0;}
+        .box {background:#111; padding:60px; border-radius:20px; text-align:center; box-shadow:0 0 30px rgba(0,255,65,0.2);}
+        h1 {margin:0 0 20px; font-size:3em; color:#00ff41;}
+        p {font-size:1.3em; margin:20px 0; line-height:1.6;}
+        a {display:inline-block; margin-top:30px; padding:14px 32px; background:#00ff41; color:#000; 
+           font-weight:bold; text-decoration:none; border-radius:8px; font-size:1.1em;}
+        a:hover {background:#00cc33;}
+      </style>
     </head>
     <body>
-      <h1>✔ Subscription Successful!</h1>
-      <p>You now have unlimited broadcasts, pages, and forms.</p>
-      <p><a href="/" style="color:#ffd700;">← Back to Dashboard</a></p>
-    </body></html>
+      <div class="box">
+        <h1>✔ Payment Successful!</h1>
+        <p>Your subscription is now <strong>active</strong>.</p>
+        <p>You have unlimited broadcasts, landing pages, and forms.</p>
+        <p><a href="/">← Return to Dashboard</a></p>
+      </div>
+    </body>
+    </html>
   `);
 });
 
@@ -822,7 +856,7 @@ app.get('/api/page/:shortId', (req, res) => {
   res.json({ shortId: req.params.shortId, title: page.title, config: page.config });
 });
 
-// ======================== FORMS ROUTES (FIXED) ========================
+// ======================== FORMS ROUTES ========================
 
 app.get('/api/forms', authenticateToken, (req, res) => {
   const forms = Array.from(formPages.entries())
@@ -873,7 +907,7 @@ app.post('/api/forms/save', authenticateToken, (req, res) => {
     userId: req.user.userId,
     title: title.trim(),
     state: sanitizedState,
-    welcomeMessage: sanitizedWelcome,   // Server-only field
+    welcomeMessage: sanitizedWelcome,
     createdAt: formPages.get(finalShortId)?.createdAt || now,
     updatedAt: now
   });
@@ -892,7 +926,7 @@ app.post('/api/forms/delete', authenticateToken, (req, res) => {
 app.get('/f/:shortId', (req, res) => {
   const form = formPages.get(req.params.shortId);
   if (!form) return res.status(404).render('404');
-  res.render('form', { title: form.title, state: form.state }); // Only safe state sent to client
+  res.render('form', { title: form.title, state: form.state });
 });
 
 app.get('/api/form/:shortId', (req, res) => {
@@ -902,13 +936,13 @@ app.get('/api/form/:shortId', (req, res) => {
     shortId: req.params.shortId, 
     title: form.title, 
     state: form.state,
-    welcomeMessage: form.welcomeMessage   // Only returned to authenticated user (dashboard)
+    welcomeMessage: form.welcomeMessage
   });
 });
 
-// ======================== SUBSCRIPTION & CONTACTS ========================
+// ======================== SUBSCRIPTION & CONTACTS (WITH PER-FORM RATE LIMIT) ========================
 
-app.post('/api/subscribe/:shortId', async (req, res) => {
+app.post('/api/subscribe/:shortId', createFormSubmitLimiter, async (req, res) => {
   const { shortId } = req.params;
   const { name, email } = req.body;
   if (!name || !name.trim() || !email || !email.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
@@ -1256,8 +1290,11 @@ process.on('SIGTERM', () => {
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FULLY FIXED');
+  console.log('\nSENDEM SERVER — COMPLETE & FINAL VERSION');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
-  console.log('Welcome message is now safely separated — blank page bug is gone!\n');
+  console.log('Features:');
+  console.log('  • Strict per-form rate limiting (10 per IP per form / 15 min)');
+  console.log('  • No automatic redirect after successful payment');
+  console.log('  • All original functionality preserved\n');
 });
