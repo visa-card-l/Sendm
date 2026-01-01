@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken';
+const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const rateLimit = require('express-rate-limit');
@@ -97,12 +97,12 @@ const formPageSchema = new mongoose.Schema({
 
 const contactSchema = new mongoose.Schema({
   userId: { type: String, required: true },
-  shortId: String, // form that generated this contact
+  shortId: String,
   name: String,
   contact: { type: String, required: true },
   telegramChatId: String,
-  status: { type: String, default: 'pending' }, // pending, subscribed, unsubscribed
-  pendingPayload: String, // temporary deep link payload
+  status: { type: String, default: 'pending' },
+  pendingPayload: String,
   submittedAt: Date,
   subscribedAt: Date,
   unsubscribedAt: Date,
@@ -120,7 +120,7 @@ const scheduledBroadcastSchema = new mongoose.Schema({
 
 const broadcastDailySchema = new mongoose.Schema({
   userId: { type: String, required: true },
-  date: { type: String, required: true }, // YYYY-MM-DD
+  date: { type: String, required: true },
   count: { type: Number, default: 1 },
 }, { timestamps: true });
 
@@ -132,7 +132,7 @@ const Contact = mongoose.model('Contact', contactSchema);
 const ScheduledBroadcast = mongoose.model('ScheduledBroadcast', scheduledBroadcastSchema);
 const BroadcastDaily = mongoose.model('BroadcastDaily', broadcastDailySchema);
 
-// Indexes for fast reads
+// Indexes
 userSchema.index({ email: 1 });
 landingPageSchema.index({ userId: 1 });
 landingPageSchema.index({ shortId: 1 });
@@ -147,7 +147,7 @@ scheduledBroadcastSchema.index({ status: 1 });
 scheduledBroadcastSchema.index({ scheduledTime: 1 });
 broadcastDailySchema.index({ userId: 1, date: 1 }, { unique: true });
 
-// In-memory active bots
+// Active bots
 const activeBots = new Map();
 
 // ==================== MIDDLEWARE ====================
@@ -226,7 +226,7 @@ async function incrementDailyBroadcastCount(userId) {
   return record.count;
 }
 
-// ==================== JWT AUTH MIDDLEWARE ====================
+// ==================== JWT AUTH ====================
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : req.query.token;
@@ -244,7 +244,7 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// ==================== TELEGRAM BOT MANAGEMENT ====================
+// ==================== TELEGRAM BOT ====================
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
     activeBots.get(user.id).stop('Replaced');
@@ -259,7 +259,6 @@ function launchUserBot(user) {
     const payload = ctx.startPayload || '';
     const chatId = ctx.chat.id.toString();
 
-    // Handle subscription confirmation
     if (payload.startsWith('sub_')) {
       const contact = await Contact.findOne({ pendingPayload: payload });
       if (contact && contact.userId === user.id) {
@@ -283,7 +282,6 @@ function launchUserBot(user) {
       }
     }
 
-    // Handle 2FA connection
     if (payload === user.id) {
       user.telegramChatId = chatId;
       user.isTelegramConnected = true;
@@ -439,7 +437,6 @@ app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
   });
 });
 
-// 2FA Code Generation & Sending
 function generate2FACode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
@@ -459,7 +456,7 @@ async function send2FACodeViaBot(user, code) {
   }
 }
 
-const resetTokens = new Map(); // temp in-memory store (valid 10 min)
+const resetTokens = new Map();
 
 app.post('/api/auth/forgot-password', async (req, res) => {
   const { email } = req.body;
@@ -515,7 +512,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
   res.json({ success: true, message: 'Password reset successful' });
 });
 
-// ==================== SUBSCRIPTION ROUTES ====================
+// ==================== SUBSCRIPTION ====================
 app.get('/api/subscription/status', authenticateToken, async (req, res) => {
   const subscribed = hasActiveSubscription(req.user);
   res.json({
@@ -605,7 +602,33 @@ app.post('/api/subscription/webhook', (req, res) => {
 });
 
 app.get('/subscription-success', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'subscription-success.html'));
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <title>Payment Successful</title>
+      <style>
+        body {font-family: system-ui, sans-serif; background:#0a0a0a; color:#00ff41; 
+              display:flex; justify-content:center; align-items:center; min-height:100vh; margin:0;}
+        .box {background:#111; padding:60px; border-radius:20px; text-align:center; box-shadow:0 0 30px rgba(0,255,65,0.2);}
+        h1 {margin:0 0 20px; font-size:3em; color:#00ff41;}
+        p {font-size:1.3em; margin:20px 0; line-height:1.6;}
+        a {display:inline-block; margin-top:30px; padding:14px 32px; background:#00ff41; color:#000; 
+           font-weight:bold; text-decoration:none; border-radius:8px; font-size:1.1em;}
+        a:hover {background:#00cc33;}
+      </style>
+    </head>
+    <body>
+      <div class="box">
+        <h1>✔ Payment Successful!</h1>
+        <p>Your subscription is now <strong>active</strong>.</p>
+        <p>You have unlimited broadcasts, landing pages, and forms.</p>
+        <p><a href="/">← Return to Dashboard</a></p>
+      </div>
+    </body>
+    </html>
+  `);
 });
 
 // ==================== LANDING PAGES ====================
@@ -943,7 +966,6 @@ app.delete('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (re
   res.json({ success: true });
 });
 
-// Scheduled broadcast executor
 setInterval(async () => {
   const now = new Date();
   const due = await ScheduledBroadcast.find({
@@ -958,7 +980,7 @@ setInterval(async () => {
   }
 }, 60000);
 
-// ==================== ADMIN LIMITS PANEL ====================
+// ==================== ADMIN LIMITS ====================
 app.get('/admin-limits', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -1056,7 +1078,6 @@ setInterval(async () => {
   await Contact.deleteMany({ pendingPayload: { $exists: true }, createdAt: { $lt: new Date(cutoff) } });
 }, 60 * 60 * 1000);
 
-// Launch all bots on startup
 mongoose.connection.once('open', async () => {
   const usersWithBots = await User.find({ telegramBotToken: { $exists: true, $ne: null } });
   usersWithBots.forEach(launchUserBot);
