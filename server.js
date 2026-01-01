@@ -8,38 +8,142 @@ const { v4: uuidv4 } = require('uuid');
 const rateLimit = require('express-rate-limit');
 const { Telegraf } = require('telegraf');
 const path = require('path');
-const fs = require('fs');
+const mongoose = require('mongoose');
 const axios = require('axios');
 const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ==================== SENSITIVE DATA FROM .env ====================
+// ==================== CONFIG & SECRETS ====================
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_weak_secret_change_me_immediately';
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || 'sk_test_fallback_change_me';
 const PAYSTACK_PUBLIC_KEY = process.env.PAYSTACK_PUBLIC_KEY || 'pk_test_fallback_change_me';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'midas';
 
-// Warnings if secrets are not properly set
-if (JWT_SECRET === 'fallback_weak_secret_change_me_immediately') {
+if (JWT_SECRET.includes('fallback')) {
   console.warn('⚠️  WARNING: JWT_SECRET not set in .env! Using insecure fallback.');
 }
 if (PAYSTACK_SECRET_KEY.startsWith('sk_test_fallback')) {
   console.warn('⚠️  WARNING: PAYSTACK_SECRET_KEY not set in .env!');
 }
 
-// ==================== PAYSTACK CONFIG ====================
-const MONTHLY_PRICE = 500000; // ₦5,000 in kobo (Paystack uses smallest currency unit)
+const MONTHLY_PRICE_KOBO = 500000; // ₦5,000 in kobo
 
-// ==================== DYNAMIC SERVER LIMITS ====================
+// Dynamic server-wide limits (configurable via admin panel)
 let DAILY_BROADCAST_LIMIT = 3;
 let MAX_LANDING_PAGES = 5;
 let MAX_FORMS = 5;
 
-// ==============================================================================================
+// Batching config
+const BATCH_SIZE = 25;
+const BATCH_INTERVAL_MS = 15000;
+const MAX_MSG_LENGTH = 4000;
 
-// Middleware
+// ==================== MONGODB CONNECTION ====================
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/sendm';
+console.log('Connecting to MongoDB:', MONGODB_URI.replace(/:([^:@]+)@/, ':****@'));
+
+mongoose.connect(MONGODB_URI, {
+  serverSelectionTimeoutMS: 30000,
+  socketTimeoutMS: 45000,
+  connectTimeoutMS: 30000,
+}).then(() => console.log('✅ MongoDB connected'))
+  .catch(err => {
+    console.error('MongoDB connection failed:', err.message);
+    process.exit(1);
+  });
+
+// ==================== SCHEMAS & MODELS ====================
+
+const userSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  fullName: String,
+  email: { type: String, required: true, unique: true, lowercase: true },
+  password: String,
+  telegramBotToken: String,
+  telegramChatId: String,
+  isTelegramConnected: { type: Boolean, default: false },
+  botUsername: String,
+  isSubscribed: { type: Boolean, default: false },
+  subscriptionEndDate: Date,
+  subscriptionPlan: String,
+  pendingPaymentReference: String,
+  createdAt: { type: Date, default: Date.now },
+}, { timestamps: true });
+
+const landingPageSchema = new mongoose.Schema({
+  shortId: { type: String, required: true, unique: true },
+  userId: { type: String, required: true },
+  title: String,
+  config: Object,
+  createdAt: Date,
+  updatedAt: Date,
+}, { timestamps: true });
+
+const formPageSchema = new mongoose.Schema({
+  shortId: { type: String, required: true, unique: true },
+  userId: { type: String, required: true },
+  title: String,
+  state: Object,
+  welcomeMessage: String,
+  createdAt: Date,
+  updatedAt: Date,
+}, { timestamps: true });
+
+const contactSchema = new mongoose.Schema({
+  userId: { type: String, required: true },
+  shortId: String,
+  name: String,
+  contact: { type: String, required: true },
+  telegramChatId: String,
+  status: { type: String, default: 'pending' },
+  submittedAt: Date,
+  subscribedAt: Date,
+  unsubscribedAt: Date,
+}, { timestamps: true });
+
+const scheduledBroadcastSchema = new mongoose.Schema({
+  broadcastId: { type: String, required: true, unique: true },
+  userId: { type: String, required: true },
+  message: String,
+  recipients: { type: String, default: 'all' },
+  scheduledTime: Date,
+  status: { type: String, default: 'pending' },
+  createdAt: Date,
+}, { timestamps: true });
+
+const broadcastDailySchema = new mongoose.Schema({
+  userId: { type: String, required: true },
+  date: { type: String, required: true },
+  count: { type: Number, default: 1 },
+}, { timestamps: true });
+
+// Models
+const User = mongoose.model('User', userSchema);
+const LandingPage = mongoose.model('LandingPage', landingPageSchema);
+const FormPage = mongoose.model('FormPage', formPageSchema);
+const Contact = mongoose.model('Contact', contactSchema);
+const ScheduledBroadcast = mongoose.model('ScheduledBroadcast', scheduledBroadcastSchema);
+const BroadcastDaily = mongoose.model('BroadcastDaily', broadcastDailySchema);
+
+// Indexes
+landingPageSchema.index({ userId: 1 });
+formPageSchema.index({ userId: 1 });
+contactSchema.index({ userId: 1 });
+contactSchema.index({ userId: 1, contact: 1 });
+contactSchema.index({ userId: 1, status: 1 });
+scheduledBroadcastSchema.index({ userId: 1 });
+scheduledBroadcastSchema.index({ status: 1 });
+scheduledBroadcastSchema.index({ scheduledTime: 1 });
+broadcastDailySchema.index({ userId: 1, date: 1 }, { unique: true });
+
+// Active bots & temporary in-memory storage
+const activeBots = new Map();
+const resetTokens = new Map();           // for password reset
+const pendingSubscribers = new Map();    // payload → { userId, shortId, name, contact, createdAt }
+
+// ==================== MIDDLEWARE ====================
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
@@ -47,84 +151,27 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Security & Storage
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: { error: 'Too many attempts' }
 });
 
-// Strict per-form rate limiter: 10 submissions per IP per individual form every 15 minutes
-const createFormSubmitLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 submissions per form per IP
+const formSubmitLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
   message: { error: 'Too many submissions to this form. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    return `\( {req.ip}:: \){req.params.shortId}`;
-  },
+  keyGenerator: (req) => req.ip + '::' + req.params.shortId,
   skip: (req) => !req.params.shortId,
 });
 
-let users = [];
-const activeBots = new Map();
-const resetTokens = new Map();
-const landingPages = new Map();
-const formPages = new Map();
-const allSubmissions = new Map();
-const pendingSubscribers = new Map();
-
-// Daily broadcast tracking
-const userBroadcastDaily = new Map();
-
-// Broadcast config
-const BATCH_SIZE = 25;
-const BATCH_INTERVAL_MS = 15000;
-const MAX_MSG_LENGTH = 4000;
-
-// Persistence
-const DATA_DIR = path.join(__dirname, 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const BROADCASTS_FILE = path.join(DATA_DIR, 'scheduled_broadcasts.json');
-let scheduledBroadcasts = new Map();
-
-// ======================== SUBSCRIPTION HELPERS ========================
-
-function hasActiveSubscription(user) {
-  return user.isSubscribed && user.subscriptionEndDate && new Date(user.subscriptionEndDate) > new Date();
-}
-
-function getUserLimits(user) {
-  if (hasActiveSubscription(user)) {
-    return {
-      dailyBroadcasts: Infinity,
-      maxLandingPages: Infinity,
-      maxForms: Infinity
-    };
-  }
-  return {
-    dailyBroadcasts: DAILY_BROADCAST_LIMIT,
-    maxLandingPages: MAX_LANDING_PAGES,
-    maxForms: MAX_FORMS
-  };
-}
-
-// ======================== UTILITIES ========================
-
+// ==================== UTILITIES ====================
 function sanitizeTelegramHtml(unsafe) {
   if (!unsafe || typeof unsafe !== 'string') return '';
-
-  const allowedTags = new Set([
-    'b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'span',
-    'tg-spoiler', 'a', 'code', 'pre', 'tg-emoji'
-  ]);
-
-  const allowedAttrs = {
-    a: ['href'],
-    'tg-emoji': ['emoji-id']
-  };
+  const allowedTags = new Set(['b','strong','i','em','u','ins','s','strike','del','span','tg-spoiler','a','code','pre','tg-emoji']);
+  const allowedAttrs = { a: ['href'], 'tg-emoji': ['emoji-id'] };
 
   let clean = unsafe
     .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
@@ -135,7 +182,6 @@ function sanitizeTelegramHtml(unsafe) {
   clean = clean.replace(/<\/?([a-z][a-z0-9]*)\b[^>]*>/gi, (match, tagName) => {
     const tag = tagName.toLowerCase();
     if (!allowedTags.has(tag)) return '';
-
     if (match.startsWith('</')) return '</' + tag + '>';
 
     let attrs = '';
@@ -144,40 +190,30 @@ function sanitizeTelegramHtml(unsafe) {
     while ((attrMatch = attrRegex.exec(match)) !== null) {
       const attrName = attrMatch[1].toLowerCase();
       let attrValue = attrMatch[2];
-
       if (allowedAttrs[tag] && allowedAttrs[tag].includes(attrName)) {
-        if (attrName === 'href') {
-          if (!/^https?:\/\//i.test(attrValue) && !attrValue.startsWith('/')) {
-            attrValue = '#';
-          }
+        if (attrName === 'href' && !/^https?:\/\//i.test(attrValue) && !attrValue.startsWith('/')) {
+          attrValue = '#';
         }
-        attrs += ' ' + attrName + '="' + attrValue.replace(/"/g, '&quot;') + '"';
+        attrs += ` \( {attrName}=" \){attrValue.replace(/"/g, '&quot;')}"`;
       }
     }
-
     return '<' + tag + attrs + '>';
   });
-
   return clean.trim();
 }
 
 function splitTelegramMessage(text) {
   if (!text) return [];
-
   const chunks = [];
   let current = '';
   const lines = text.split(/\r?\n/);
 
   for (let line of lines) {
     while (line.length > MAX_MSG_LENGTH) {
-      if (current) {
-        chunks.push(current.trim());
-        current = '';
-      }
+      if (current) { chunks.push(current.trim()); current = ''; }
       chunks.push(line.substring(0, MAX_MSG_LENGTH).trim());
       line = line.substring(MAX_MSG_LENGTH);
     }
-
     if (current.length + line.length + (current ? 1 : 0) <= MAX_MSG_LENGTH) {
       current += (current ? '\n' : '') + line;
     } else {
@@ -185,22 +221,17 @@ function splitTelegramMessage(text) {
       current = line;
     }
   }
-
   if (current) chunks.push(current.trim());
 
   if (chunks.length <= 1) return chunks;
-
   const total = chunks.length;
   return chunks.map((chunk, i) => {
     const header = `(\( {i + 1}/ \){total})\n\n`;
-    if (header.length + chunk.length > MAX_MSG_LENGTH) {
-      return chunk;
-    }
-    return header + chunk;
+    return header.length + chunk.length > MAX_MSG_LENGTH ? chunk : header + chunk;
   });
 }
 
-function escapeHtml(unsafe) {
+function escapeHtml(unsafe = '') {
   return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
@@ -208,175 +239,53 @@ function getTodayDateString() {
   return new Date().toISOString().slice(0, 10);
 }
 
-// ======================== PERSISTENCE ========================
-
-function loadScheduledBroadcasts() {
-  if (fs.existsSync(BROADCASTS_FILE)) {
-    try {
-      const data = JSON.parse(fs.readFileSync(BROADCASTS_FILE, 'utf8'));
-      for (const entry of data) {
-        scheduledBroadcasts.set(entry.broadcastId, entry);
-      }
-    } catch (err) {
-      console.error('Failed to load broadcasts:', err.message);
-    }
-  }
+function hasActiveSubscription(user) {
+  return user.isSubscribed && user.subscriptionEndDate && new Date(user.subscriptionEndDate) > new Date();
 }
 
-function saveScheduledBroadcasts() {
+function getUserLimits(user) {
+  if (hasActiveSubscription(user)) {
+    return { dailyBroadcasts: Infinity, maxLandingPages: Infinity, maxForms: Infinity };
+  }
+  return { dailyBroadcasts: DAILY_BROADCAST_LIMIT, maxLandingPages: MAX_LANDING_PAGES, maxForms: MAX_FORMS };
+}
+
+async function incrementDailyBroadcast(userId) {
+  const today = getTodayDateString();
+  const record = await BroadcastDaily.findOneAndUpdate(
+    { userId, date: today },
+    { $inc: { count: 1 } },
+    { upsert: true, new: true }
+  );
+  return record.count;
+}
+
+// ==================== JWT AUTH ====================
+const authenticateToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : req.query.token;
+
+  if (!token) return res.status(401).json({ error: 'Access token required' });
+
   try {
-    const pendingOnly = Array.from(scheduledBroadcasts.values()).filter(t => t.status === 'pending');
-    fs.writeFileSync(BROADCASTS_FILE, JSON.stringify(pendingOnly, null, 2));
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await User.findOne({ id: decoded.userId });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    req.user = user;
+    next();
   } catch (err) {
-    console.error('Failed to save broadcasts:', err.message);
+    res.status(403).json({ error: 'Invalid or expired token' });
   }
-}
+};
 
-// ======================== SCHEDULED BROADCAST EXECUTION ========================
-
-async function executeScheduledBroadcast(broadcastId) {
-  const task = scheduledBroadcasts.get(broadcastId);
-  if (!task || task.status !== 'pending') return;
-
-  const result = await executeBroadcast(task.userId, task.message);
-
-  let reportText = `<b>Scheduled Broadcast Report</b>\n\n`;
-
-  if (result.error) {
-    reportText += `<b>Failed to send</b>\n${escapeHtml(result.error)}`;
-  } else {
-    const statusEmoji = result.failed === 0 ? '✔' : '⚠️';
-    reportText += statusEmoji + ' <b>' + result.sent + ' of ' + result.total + '</b> contacts received the message.\n';
-    if (result.failed > 0) {
-      reportText += '' + result.failed + ' failed to deliver.';
-    }
-  }
-
-  reportText += `\n\nSent on: ${new Date().toLocaleString()}`;
-
-  const user = users.find(u => u.id === task.userId);
-  if (user && user.isTelegramConnected && user.telegramChatId && activeBots.has(user.id)) {
-    try {
-      await activeBots.get(user.id).telegram.sendMessage(user.telegramChatId, reportText, { parse_mode: 'HTML' });
-    } catch (err) {
-      console.error(`Failed to send report to user ${user.email}:`, err.message);
-    }
-  }
-
-  scheduledBroadcasts.delete(broadcastId);
-  saveScheduledBroadcasts();
-}
-
-// Periodic checker (every minute)
-setInterval(() => {
-  const now = Date.now();
-  for (const [broadcastId, task] of scheduledBroadcasts.entries()) {
-    if (task.status === 'pending' && task.scheduledTime <= now) {
-      executeScheduledBroadcast(broadcastId);
-    }
-  }
-}, 60000);
-
-function scheduleBroadcast(userId, message, recipients = 'all', scheduledTime) {
-  const broadcastId = uuidv4();
-  const scheduledMs = new Date(scheduledTime).getTime();
-
-  if (isNaN(scheduledMs) || scheduledMs <= Date.now()) {
-    executeBroadcast(userId, message); // immediate if time is invalid or past
-    return broadcastId;
-  }
-
-  const entry = {
-    broadcastId,
-    userId,
-    message,
-    recipients,
-    scheduledTime: scheduledMs,
-    createdAt: Date.now(),
-    status: 'pending'
-  };
-
-  scheduledBroadcasts.set(broadcastId, entry);
-  saveScheduledBroadcasts();
-
-  return broadcastId;
-}
-
-// ======================== BROADCAST SENDING ========================
-
-async function executeBroadcast(userId, message) {
-  const bot = activeBots.get(userId);
-  if (!bot || !bot.telegram) return { sent: 0, failed: 0, total: 0, error: 'Bot not connected' };
-
-  const sanitizedMessage = sanitizeTelegramHtml(message);
-  const numberedChunks = splitTelegramMessage(sanitizedMessage);
-
-  const targets = (allSubmissions.get(userId) || []).filter(s => s.status === 'subscribed' && s.telegramChatId);
-  if (targets.length === 0) return { sent: 0, failed: 0, total: 0 };
-
-  const batches = [];
-  for (let i = 0; i < targets.length; i += BATCH_SIZE) {
-    batches.push(targets.slice(i, i + BATCH_SIZE));
-  }
-
-  let sent = 0, failed = 0;
-  let contactsList = allSubmissions.get(userId) || [];
-
-  for (let i = 0; i < batches.length; i++) {
-    const batch = batches[i];
-    for (const sub of batch) {
-      try {
-        for (const chunk of numberedChunks) {
-          await bot.telegram.sendMessage(sub.telegramChatId, chunk, { parse_mode: 'HTML' });
-        }
-        sent++;
-      } catch (err) {
-        failed++;
-
-        const errMsg = err.message?.toLowerCase() || '';
-        const isBlocked =
-          err.response?.error_code === 403 ||
-          errMsg.includes('blocked') ||
-          errMsg.includes('kicked') ||
-          errMsg.includes('forbidden') ||
-          errMsg.includes('chat not found') ||
-          errMsg.includes('user is deactivated');
-
-        if (isBlocked && sub.telegramChatId) {
-          contactsList = contactsList.map(entry => {
-            const matchesChatId = entry.telegramChatId === sub.telegramChatId;
-            const matchesContact = entry.contact === sub.contact;
-
-            if ((matchesChatId || matchesContact) &&
-                (entry.status === 'subscribed' || entry.status === 'pending')) {
-              return {
-                ...entry,
-                status: 'unsubscribed',
-                unsubscribedAt: new Date().toISOString(),
-                telegramChatId: matchesChatId ? null : entry.telegramChatId
-              };
-            }
-            return entry;
-          });
-        }
-      }
-    }
-
-    allSubmissions.set(userId, contactsList);
-
-    if (i < batches.length - 1) await new Promise(r => setTimeout(r, BATCH_INTERVAL_MS));
-  }
-
-  return { sent, failed, total: targets.length };
-}
-
-// ======================== BOT LAUNCH ========================
-
+// ==================== TELEGRAM BOT ====================
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
-    activeBots.get(user.id).stop();
+    activeBots.get(user.id).stop('Replaced');
     activeBots.delete(user.id);
   }
+
+  if (!user.telegramBotToken) return;
 
   const bot = new Telegraf(user.telegramBotToken);
 
@@ -387,32 +296,30 @@ function launchUserBot(user) {
     if (payload.startsWith('sub_') && pendingSubscribers.has(payload)) {
       const sub = pendingSubscribers.get(payload);
       if (sub.userId === user.id) {
-        let list = allSubmissions.get(user.id) || [];
-        const byChat = list.findIndex(e => e.telegramChatId === chatId);
-        const byContact = list.findIndex(e => e.contact === sub.contact);
+        let contact = await Contact.findOne({ userId: user.id, contact: sub.contact });
 
-        let updatedEntry = false;
-
-        if (byChat !== -1) {
-          list[byChat] = { ...list[byChat], name: sub.name, contact: sub.contact, shortId: sub.shortId, subscribedAt: new Date().toISOString(), status: 'subscribed' };
-          updatedEntry = true;
-        } else if (byContact !== -1) {
-          list[byContact] = { ...list[byContact], name: sub.name, telegramChatId: chatId, shortId: sub.shortId, subscribedAt: new Date().toISOString(), status: 'subscribed' };
-          updatedEntry = true;
-        } else {
-          list.push({ name: sub.name, contact: sub.contact, telegramChatId: chatId, shortId: sub.shortId, submittedAt: new Date().toISOString(), subscribedAt: new Date().toISOString(), status: 'subscribed' });
-          updatedEntry = true;
+        if (!contact) {
+          contact = new Contact({
+            userId: user.id,
+            shortId: sub.shortId,
+            name: sub.name,
+            contact: sub.contact,
+            submittedAt: new Date(),
+            status: 'pending'
+          });
         }
 
-        if (updatedEntry) {
-          list = list.filter(entry => !(entry.contact === sub.contact && entry.status === 'pending'));
-          allSubmissions.set(user.id, list);
-        }
+        contact.telegramChatId = chatId;
+        contact.status = 'subscribed';
+        contact.subscribedAt = new Date();
+        await contact.save();
+
+        // Clean up any duplicate pending entries
+        await Contact.deleteMany({ userId: user.id, contact: sub.contact, status: 'pending' });
 
         pendingSubscribers.delete(payload);
 
-        // === CUSTOM WELCOME MESSAGE (NOW FROM SEPARATE FIELD) ===
-        const form = formPages.get(sub.shortId);
+        const form = await FormPage.findOne({ shortId: sub.shortId });
         let welcomeText = '<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you';
 
         if (form && form.welcomeMessage && form.welcomeMessage.trim()) {
@@ -429,6 +336,7 @@ function launchUserBot(user) {
     if (payload === user.id) {
       user.telegramChatId = chatId;
       user.isTelegramConnected = true;
+      await user.save();
       await ctx.replyWithHTML('<b>Sendm 2FA Connected Successfully!</b>\n\nYou will receive login codes here.');
       return;
     }
@@ -436,66 +344,65 @@ function launchUserBot(user) {
     await ctx.replyWithHTML('<b>Welcome!</b>\n\nSubscribe from the page to get updates.');
   });
 
-  bot.command('status', ctx => ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>'));
+  bot.command('status', async (ctx) => {
+    await ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>');
+  });
 
-  bot.catch(err => console.error('Bot error [' + user.email + ']:', err));
+  bot.catch((err) => console.error('Bot error for ' + user.email + ':', err));
   bot.launch();
   activeBots.set(user.id, bot);
 }
 
-// ======================== JWT MIDDLEWARE ========================
-
-const authenticateToken = (req, res, next) => {
-  const token = req.headers.authorization ? req.headers.authorization.split(' ')[1] : req.query.token;
-  if (!token) return res.status(401).json({ error: 'Access token required' });
-  jwt.verify(token, JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ error: 'Invalid token' });
-    req.user = decoded;
-    next();
-  });
-};
-
-// ======================== AUTH ROUTES ========================
-
+// ==================== AUTH ROUTES ====================
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { fullName, email, password } = req.body;
   if (!fullName || !email || !password) return res.status(400).json({ error: 'All fields required' });
-  if (users.find(u => u.email === email.toLowerCase())) return res.status(409).json({ error: 'Email already exists' });
+
+  const existing = await User.findOne({ email: email.toLowerCase() });
+  if (existing) return res.status(409).json({ error: 'Email already exists' });
 
   const hashed = await bcrypt.hash(password, 12);
-  const newUser = {
+  const newUser = await User.create({
     id: uuidv4(),
-    fullName,
+    fullName: fullName.trim(),
     email: email.toLowerCase(),
     password: hashed,
-    createdAt: new Date().toISOString(),
-    telegramBotToken: null,
-    telegramChatId: null,
-    isTelegramConnected: false,
-    botUsername: null,
-    isSubscribed: false,
-    subscriptionEndDate: null,
-    subscriptionPlan: null
-  };
-  users.push(newUser);
-  const token = jwt.sign({ userId: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '7d' });
+  });
 
-  res.status(201).json({ success: true, token, user: { id: newUser.id, fullName, email: newUser.email, isTelegramConnected: false } });
+  const token = jwt.sign({ userId: newUser.id }, JWT_SECRET, { expiresIn: '7d' });
+  res.status(201).json({
+    success: true,
+    token,
+    user: { id: newUser.id, fullName: newUser.fullName, email: newUser.email, isTelegramConnected: false }
+  });
 });
 
 app.post('/api/auth/login', authLimiter, async (req, res) => {
   const { email, password } = req.body;
-  const user = users.find(u => u.email === email.toLowerCase());
-  if (!user || !(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-  const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ success: true, token, user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected } });
+  const user = await User.findOne({ email: email.toLowerCase() });
+  if (!user || !(await bcrypt.compare(password, user.password))) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({
+    success: true,
+    token,
+    user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected }
+  });
 });
 
 app.get('/api/auth/me', authenticateToken, (req, res) => {
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected } });
+  res.json({
+    user: {
+      id: req.user.id,
+      fullName: req.user.fullName,
+      email: req.user.email,
+      isTelegramConnected: req.user.isTelegramConnected
+    }
+  });
 });
 
 app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
@@ -503,27 +410,31 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   if (!botToken || !botToken.trim()) return res.status(400).json({ error: 'Bot token required' });
 
   const token = botToken.trim();
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
 
   try {
-    if (activeBots.has(user.id)) { activeBots.get(user.id).stop(); activeBots.delete(user.id); }
+    const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe');
+    if (!response.data.ok) return res.status(400).json({ error: 'Invalid bot token' });
 
-    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
-    const data = await response.json();
-    if (!data.ok || !data.result || !data.result.username) return res.status(400).json({ error: 'Invalid bot token' });
+    const botUsername = response.data.result.username.replace(/^@/, '');
 
-    const botUsername = data.result.username.replace(/^@/, '');
-    user.telegramBotToken = token;
-    user.botUsername = botUsername;
-    user.isTelegramConnected = false;
-    user.telegramChatId = null;
-    launchUserBot(user);
+    req.user.telegramBotToken = token;
+    req.user.botUsername = botUsername;
+    req.user.isTelegramConnected = false;
+    req.user.telegramChatId = null;
+    await req.user.save();
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
-    res.json({ success: true, message: 'Bot connected!', botUsername: '@' + botUsername, startLink });
-  } catch {
-    res.status(500).json({ error: 'Failed to connect' });
+    launchUserBot(req.user);
+
+    const startLink = 'https://t.me/' + botUsername + '?start=' + req.user.id;
+    res.json({
+      success: true,
+      message: 'Bot connected!',
+      botUsername: '@' + botUsername,
+      startLink
+    });
+  } catch (err) {
+    console.error('Telegram connect error:', err.message);
+    res.status(500).json({ error: 'Failed to validate bot token' });
   }
 });
 
@@ -532,59 +443,70 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   if (!newBotToken || !newBotToken.trim()) return res.status(400).json({ error: 'New bot token required' });
 
   const token = newBotToken.trim();
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
 
   try {
-    if (activeBots.has(user.id)) { activeBots.get(user.id).stop(); activeBots.delete(user.id); }
+    const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe');
+    if (!response.data.ok) return res.status(400).json({ error: 'Invalid bot token' });
 
-    const response = await fetch('https://api.telegram.org/bot' + token + '/getMe');
-    const data = await response.json();
-    if (!data.ok || !data.result || !data.result.username) return res.status(400).json({ error: 'Invalid bot token' });
+    const botUsername = response.data.result.username.replace(/^@/, '');
 
-    const botUsername = data.result.username.replace(/^@/, '');
-    user.telegramBotToken = token;
-    user.botUsername = botUsername;
-    user.isTelegramConnected = false;
-    user.telegramChatId = null;
-    launchUserBot(user);
+    req.user.telegramBotToken = token;
+    req.user.botUsername = botUsername;
+    req.user.isTelegramConnected = false;
+    req.user.telegramChatId = null;
+    await req.user.save();
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + user.id;
-    res.json({ success: true, message: 'Bot token updated!', botUsername: '@' + botUsername, startLink });
-  } catch {
-    res.status(500).json({ error: 'Failed to validate token' });
+    launchUserBot(req.user);
+
+    const startLink = 'https://t.me/' + botUsername + '?start=' + req.user.id;
+    res.json({
+      success: true,
+      message: 'Bot token updated!',
+      botUsername: '@' + botUsername,
+      startLink
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to validate new token' });
   }
 });
 
-app.post('/api/auth/disconnect-telegram', authenticateToken, (req, res) => {
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+app.post('/api/auth/disconnect-telegram', authenticateToken, async (req, res) => {
+  if (activeBots.has(req.user.id)) {
+    activeBots.get(req.user.id).stop('Disconnected');
+    activeBots.delete(req.user.id);
+  }
 
-  if (activeBots.has(user.id)) { activeBots.get(user.id).stop(); activeBots.delete(user.id); }
-
-  user.telegramBotToken = null;
-  user.botUsername = null;
-  user.telegramChatId = null;
-  user.isTelegramConnected = false;
+  req.user.telegramBotToken = null;
+  req.user.botUsername = null;
+  req.user.telegramChatId = null;
+  req.user.isTelegramConnected = false;
+  await req.user.save();
 
   res.json({ success: true, message: 'Telegram disconnected' });
 });
 
 app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ activated: user.isTelegramConnected, chatId: user.telegramChatId || null });
+  res.json({
+    activated: req.user.isTelegramConnected,
+    chatId: req.user.telegramChatId || null
+  });
 });
 
-function generate2FACode() { return Math.floor(100000 + Math.random() * 900000).toString(); }
+function generate2FACode() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
 
 async function send2FACodeViaBot(user, code) {
   if (!user.isTelegramConnected || !user.telegramChatId || !activeBots.has(user.id)) return false;
   try {
-    await activeBots.get(user.id).telegram.sendMessage(user.telegramChatId,
-      'Security Alert – Password Reset\n\nYour 6-digit code:\n\n<b>' + code + '</b>\n\nValid for 10 minutes.', { parse_mode: 'HTML' });
+    await activeBots.get(user.id).telegram.sendMessage(
+      user.telegramChatId,
+      'Security Alert – Password Reset\n\nYour 6-digit code:\n\n<b>' + code + '</b>\n\nValid for 10 minutes.',
+      { parse_mode: 'HTML' }
+    );
     return true;
-  } catch {
+  } catch (err) {
+    console.error('Failed to send 2FA code:', err.message);
     return false;
   }
 }
@@ -593,13 +515,14 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
 
-  const user = users.find(u => u.email === email.toLowerCase());
+  const user = await User.findOne({ email: email.toLowerCase() });
   if (!user) return res.json({ success: true, message: 'If account exists, code was sent.' });
   if (!user.isTelegramConnected) return res.status(400).json({ error: 'Telegram 2FA not connected' });
 
   const code = generate2FACode();
   const resetToken = uuidv4();
   resetTokens.set(resetToken, { userId: user.id, code, expiresAt: Date.now() + 10 * 60 * 1000 });
+
   const sent = await send2FACodeViaBot(user, code);
   if (!sent) return res.status(500).json({ error: 'Failed to send code' });
 
@@ -630,34 +553,31 @@ app.post('/api/auth/reset-password', async (req, res) => {
     return res.status(400).json({ error: 'Invalid session' });
   }
 
-  const user = users.find(u => u.id === entry.userId);
+  const user = await User.findOne({ id: entry.userId });
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   user.password = await bcrypt.hash(newPassword, 12);
+  await user.save();
   resetTokens.delete(resetToken);
+
   res.json({ success: true, message: 'Password reset successful' });
 });
 
-// ======================== SUBSCRIPTION ROUTES ========================
-
-app.get('/api/subscription/status', authenticateToken, (req, res) => {
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  const subscribed = hasActiveSubscription(user);
+// ==================== SUBSCRIPTION ROUTES ====================
+app.get('/api/subscription/status', authenticateToken, async (req, res) => {
+  const subscribed = hasActiveSubscription(req.user);
   res.json({
     subscribed,
     plan: subscribed ? 'premium-monthly' : 'free',
-    endDate: user.subscriptionEndDate || null,
-    daysLeft: subscribed ? Math.ceil((new Date(user.subscriptionEndDate) - new Date()) / (1000 * 60 * 60 * 24)) : 0
+    endDate: req.user.subscriptionEndDate || null,
+    daysLeft: subscribed
+      ? Math.ceil((new Date(req.user.subscriptionEndDate) - new Date()) / (1000 * 60 * 60 * 24))
+      : 0
   });
 });
 
 app.post('/api/subscription/initiate', authenticateToken, async (req, res) => {
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  if (hasActiveSubscription(user)) {
+  if (hasActiveSubscription(req.user)) {
     return res.status(400).json({ error: 'You already have an active subscription' });
   }
 
@@ -665,18 +585,18 @@ app.post('/api/subscription/initiate', authenticateToken, async (req, res) => {
     const response = await axios.post(
       'https://api.paystack.co/transaction/initialize',
       {
-        email: user.email,
-        amount: MONTHLY_PRICE,
+        email: req.user.email,
+        amount: MONTHLY_PRICE_KOBO,
         currency: 'NGN',
         callback_url: req.protocol + '://' + req.get('host') + '/subscription-success',
         metadata: {
-          userId: user.id,
+          userId: req.user.id,
           plan: 'premium-monthly'
         }
       },
       {
         headers: {
-          Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+          Authorization: 'Bearer ' + PAYSTACK_SECRET_KEY,
           'Content-Type': 'application/json'
         }
       }
@@ -684,7 +604,8 @@ app.post('/api/subscription/initiate', authenticateToken, async (req, res) => {
 
     const { authorization_url, reference } = response.data.data;
 
-    user.pendingPaymentReference = reference;
+    req.user.pendingPaymentReference = reference;
+    await req.user.save();
 
     res.json({
       success: true,
@@ -697,48 +618,49 @@ app.post('/api/subscription/initiate', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/subscription/webhook', (req, res) => {
-  const hash = crypto
-    .createHmac('sha512', PAYSTACK_SECRET_KEY)
-    .update(JSON.stringify(req.body))
-    .digest('hex');
+app.post('/api/subscription/webhook', async (req, res) => {
+  try {
+    const hash = crypto
+      .createHmac('sha512', PAYSTACK_SECRET_KEY)
+      .update(JSON.stringify(req.body))
+      .digest('hex');
 
-  if (hash !== req.headers['x-paystack-signature']) {
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
-
-  const event = req.body;
-
-  if (event.event === 'charge.success') {
-    const { reference, metadata } = event.data;
-    const { userId } = metadata;
-
-    const user = users.find(u => u.id === userId);
-    if (!user) {
-      console.error('Webhook: User not found for ID:', userId);
-      return res.status(200).send('OK');
+    if (hash !== req.headers['x-paystack-signature']) {
+      return res.status(401).send('Invalid signature');
     }
 
-    if (user.pendingPaymentReference !== reference) {
-      console.warn('Webhook: Reference mismatch');
-      return res.status(200).send('OK');
+    const event = req.body;
+
+    if (event.event === 'charge.success') {
+      const { reference, metadata } = event.data;
+      const userId = metadata?.userId;
+
+      if (!userId) return res.status(200).send('OK');
+
+      const user = await User.findOne({ id: userId });
+      if (!user || user.pendingPaymentReference !== reference) {
+        return res.status(200).send('OK');
+      }
+
+      const endDate = new Date();
+      endDate.setDate(endDate.getDate() + 30);
+
+      user.isSubscribed = true;
+      user.subscriptionEndDate = endDate;
+      user.subscriptionPlan = 'premium-monthly';
+      user.pendingPaymentReference = undefined;
+      await user.save();
+
+      console.log(`Subscription activated for \( {user.email} (ref: \){reference})`);
     }
 
-    const endDate = new Date();
-    endDate.setDate(endDate.getDate() + 30);
-
-    user.isSubscribed = true;
-    user.subscriptionEndDate = endDate.toISOString();
-    user.subscriptionPlan = 'premium-monthly';
-    delete user.pendingPaymentReference;
-
-    console.log(`Subscription activated for user: \( {user.email} until \){endDate}`);
+    res.status(200).send('OK');
+  } catch (err) {
+    console.error('Webhook error:', err);
+    res.status(200).send('OK');
   }
-
-  res.status(200).send('OK');
 });
 
-// No automatic redirect after payment – user returns manually
 app.get('/subscription-success', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -769,205 +691,193 @@ app.get('/subscription-success', (req, res) => {
   `);
 });
 
-// ======================== PAGES ROUTES ========================
-
-app.get('/api/pages', authenticateToken, (req, res) => {
-  const pages = Array.from(landingPages.entries())
-    .filter(([_, p]) => p.userId === req.user.userId)
-    .map(([shortId, p]) => ({ shortId, title: p.title, createdAt: p.createdAt, updatedAt: p.updatedAt, url: req.protocol + '://' + req.get('host') + '/p/' + shortId }));
-  res.json({ pages });
+// ==================== LANDING PAGES ====================
+app.get('/api/pages', authenticateToken, async (req, res) => {
+  const pages = await LandingPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
+  const host = req.get('host');
+  const protocol = req.protocol;
+  const formatted = pages.map(p => ({
+    shortId: p.shortId,
+    title: p.title,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+    url: protocol + '://' + host + '/p/' + p.shortId
+  }));
+  res.json({ pages: formatted });
 });
 
-app.post('/api/pages/save', authenticateToken, (req, res) => {
-  const userId = req.user.userId;
-  const user = users.find(u => u.id === userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  const limits = getUserLimits(user);
-  const currentCount = Array.from(landingPages.values()).filter(p => p.userId === userId).length;
-
-  if (currentCount >= limits.maxLandingPages) {
-    return res.status(403).json({ 
-      error: `Limit reached: Maximum ${limits.maxLandingPages === Infinity ? 'unlimited (subscribed)' : limits.maxLandingPages} landing pages allowed.` 
-    });
-  }
-
+app.post('/api/pages/save', authenticateToken, async (req, res) => {
   const { shortId, title, config } = req.body;
   if (!title || !config || !Array.isArray(config.blocks)) return res.status(400).json({ error: 'Title and config.blocks required' });
 
+  const limits = getUserLimits(req.user);
+  const currentCount = await LandingPage.countDocuments({ userId: req.user.id });
+  if (currentCount >= limits.maxLandingPages && limits.maxLandingPages !== Infinity) {
+    return res.status(403).json({ error: 'Maximum landing pages limit reached.' });
+  }
+
   const finalShortId = shortId || uuidv4().slice(0, 8);
-  const now = new Date().toISOString();
+  const now = new Date();
 
   const cleanBlocks = config.blocks.map(b => {
-    if (b.isEditor || (b.id && (b.id.includes('editor-') || b.id.includes('control-')))) return null;
-    if (b.type === 'text') {
-      const content = (b.content || '').trim();
-      if (!content) return null;
-      return { type: 'text', tag: b.tag || 'p', content };
-    }
-    if (b.type === 'image') {
-      const src = b.src ? b.src.trim() : '';
-      if (!src) return null;
-      return { type: 'image', src };
-    }
-    if (b.type === 'button') {
-      const text = (b.text || '').trim();
-      if (!text) return null;
-      return { type: 'button', text, href: b.href || '' };
-    }
-    if (b.type === 'form') {
-      const html = b.html ? b.html.trim() : '';
-      if (!html) return null;
-      return { type: 'form', html: html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '') };
-    }
+    if (!b || b.isEditor || (b.id && (b.id.includes('editor-') || b.id.includes('control-')))) return null;
+    if (b.type === 'text') return { type: 'text', tag: b.tag || 'p', content: (b.content || '').trim() };
+    if (b.type === 'image') return b.src ? { type: 'image', src: b.src.trim() } : null;
+    if (b.type === 'button') return b.text ? { type: 'button', text: b.text.trim(), href: b.href || '' } : null;
+    if (b.type === 'form') return b.html ? { type: 'form', html: b.html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '') } : null;
     return null;
   }).filter(Boolean);
 
   if (cleanBlocks.length === 0) return res.status(400).json({ error: 'No valid blocks' });
 
-  landingPages.set(finalShortId, {
-    userId: req.user.userId,
-    title: title.trim(),
-    config: { blocks: cleanBlocks },
-    createdAt: landingPages.get(finalShortId)?.createdAt || now,
-    updatedAt: now
-  });
+  await LandingPage.findOneAndUpdate(
+    { shortId: finalShortId },
+    {
+      userId: req.user.id,
+      title: title.trim(),
+      config: { blocks: cleanBlocks },
+      updatedAt: now,
+      createdAt: shortId ? undefined : now
+    },
+    { upsert: true }
+  );
 
-  res.json({ success: true, shortId: finalShortId, url: req.protocol + '://' + req.get('host') + '/p/' + finalShortId });
+  const url = req.protocol + '://' + req.get('host') + '/p/' + finalShortId;
+  res.json({ success: true, shortId: finalShortId, url });
 });
 
-app.post('/api/pages/delete', authenticateToken, (req, res) => {
+app.post('/api/pages/delete', authenticateToken, async (req, res) => {
   const { shortId } = req.body;
-  const page = landingPages.get(shortId);
-  if (!page || page.userId !== req.user.userId) return res.status(404).json({ error: 'Page not found' });
-  landingPages.delete(shortId);
+  const page = await LandingPage.findOne({ shortId, userId: req.user.id });
+  if (!page) return res.status(404).json({ error: 'Page not found' });
+  await LandingPage.deleteOne({ shortId });
   res.json({ success: true });
 });
 
-app.get('/p/:shortId', (req, res) => {
-  const page = landingPages.get(req.params.shortId);
+app.get('/p/:shortId', async (req, res) => {
+  const page = await LandingPage.findOne({ shortId: req.params.shortId });
   if (!page) return res.status(404).render('404');
   res.render('landing', { title: page.title, blocks: page.config.blocks });
 });
 
-app.get('/api/page/:shortId', (req, res) => {
-  const page = landingPages.get(req.params.shortId);
+app.get('/api/page/:shortId', authenticateToken, async (req, res) => {
+  const page = await LandingPage.findOne({ shortId: req.params.shortId, userId: req.user.id });
   if (!page) return res.status(404).json({ error: 'Page not found' });
-  res.json({ shortId: req.params.shortId, title: page.title, config: page.config });
+  res.json({ shortId: page.shortId, title: page.title, config: page.config });
 });
 
-// ======================== FORMS ROUTES ========================
-
-app.get('/api/forms', authenticateToken, (req, res) => {
-  const forms = Array.from(formPages.entries())
-    .filter(([_, f]) => f.userId === req.user.userId)
-    .map(([shortId, f]) => ({ 
-      shortId, 
-      title: f.title, 
-      createdAt: f.createdAt, 
-      updatedAt: f.updatedAt, 
-      url: req.protocol + '://' + req.get('host') + '/f/' + shortId 
-    }));
-  res.json({ forms });
+// ==================== FORMS ====================
+app.get('/api/forms', authenticateToken, async (req, res) => {
+  const forms = await FormPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
+  const host = req.get('host');
+  const protocol = req.protocol;
+  const formatted = forms.map(f => ({
+    shortId: f.shortId,
+    title: f.title,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+    url: protocol + '://' + host + '/f/' + f.shortId
+  }));
+  res.json({ forms: formatted });
 });
 
-app.post('/api/forms/save', authenticateToken, (req, res) => {
-  const userId = req.user.userId;
-  const user = users.find(u => u.id === userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  const limits = getUserLimits(user);
-  const currentCount = Array.from(formPages.values()).filter(f => f.userId === userId).length;
-
-  if (currentCount >= limits.maxForms) {
-    return res.status(403).json({ 
-      error: `Limit reached: Maximum ${limits.maxForms === Infinity ? 'unlimited (subscribed)' : limits.maxForms} forms allowed.` 
-    });
-  }
-
+app.post('/api/forms/save', authenticateToken, async (req, res) => {
   const { shortId, title, state, welcomeMessage } = req.body;
   if (!title || !state) return res.status(400).json({ error: 'Title and state required' });
 
-  const sanitizedState = JSON.parse(JSON.stringify(state));
+  const limits = getUserLimits(req.user);
+  const currentCount = await FormPage.countDocuments({ userId: req.user.id });
+  if (currentCount >= limits.maxForms && limits.maxForms !== Infinity) {
+    return res.status(403).json({ error: 'Maximum forms limit reached.' });
+  }
 
-  // Sanitize public-facing fields only
+  const sanitizedState = JSON.parse(JSON.stringify(state));
   if (sanitizedState.headerText) sanitizedState.headerText = sanitizedState.headerText.replace(/<script.*?<\/script>/gi, '');
   if (sanitizedState.subheaderText) sanitizedState.subheaderText = sanitizedState.subheaderText.replace(/<script.*?<\/script>/gi, '');
   if (sanitizedState.buttonText) sanitizedState.buttonText = sanitizedState.buttonText.replace(/<script.*?<\/script>/gi, '');
 
-  // Sanitize welcome message separately (used only in Telegram)
   const sanitizedWelcome = welcomeMessage && typeof welcomeMessage === 'string'
     ? sanitizeTelegramHtml(welcomeMessage.trim())
     : '';
 
   const finalShortId = shortId || uuidv4().slice(0, 8);
-  const now = new Date().toISOString();
+  const now = new Date();
 
-  formPages.set(finalShortId, {
-    userId: req.user.userId,
-    title: title.trim(),
-    state: sanitizedState,
-    welcomeMessage: sanitizedWelcome,
-    createdAt: formPages.get(finalShortId)?.createdAt || now,
-    updatedAt: now
-  });
+  await FormPage.findOneAndUpdate(
+    { shortId: finalShortId },
+    {
+      userId: req.user.id,
+      title: title.trim(),
+      state: sanitizedState,
+      welcomeMessage: sanitizedWelcome,
+      updatedAt: now,
+      createdAt: shortId ? undefined : now
+    },
+    { upsert: true }
+  );
 
-  res.json({ success: true, shortId: finalShortId, url: req.protocol + '://' + req.get('host') + '/f/' + finalShortId });
+  const url = req.protocol + '://' + req.get('host') + '/f/' + finalShortId;
+  res.json({ success: true, shortId: finalShortId, url });
 });
 
-app.post('/api/forms/delete', authenticateToken, (req, res) => {
+app.post('/api/forms/delete', authenticateToken, async (req, res) => {
   const { shortId } = req.body;
-  const form = formPages.get(shortId);
-  if (!form || form.userId !== req.user.userId) return res.status(404).json({ error: 'Form not found' });
-  formPages.delete(shortId);
+  const form = await FormPage.findOne({ shortId, userId: req.user.id });
+  if (!form) return res.status(404).json({ error: 'Form not found' });
+  await FormPage.deleteOne({ shortId });
+  await Contact.deleteMany({ shortId, userId: req.user.id });
   res.json({ success: true });
 });
 
-app.get('/f/:shortId', (req, res) => {
-  const form = formPages.get(req.params.shortId);
+app.get('/f/:shortId', async (req, res) => {
+  const form = await FormPage.findOne({ shortId: req.params.shortId });
   if (!form) return res.status(404).render('404');
   res.render('form', { title: form.title, state: form.state });
 });
 
-app.get('/api/form/:shortId', (req, res) => {
-  const form = formPages.get(req.params.shortId);
+app.get('/api/form/:shortId', authenticateToken, async (req, res) => {
+  const form = await FormPage.findOne({ shortId: req.params.shortId, userId: req.user.id });
   if (!form) return res.status(404).json({ error: 'Form not found' });
-  res.json({ 
-    shortId: req.params.shortId, 
-    title: form.title, 
+  res.json({
+    shortId: form.shortId,
+    title: form.title,
     state: form.state,
     welcomeMessage: form.welcomeMessage
   });
 });
 
-// ======================== SUBSCRIPTION & CONTACTS (WITH PER-FORM RATE LIMIT) ========================
-
-app.post('/api/subscribe/:shortId', createFormSubmitLimiter, async (req, res) => {
+// ==================== SUBSCRIBE & CONTACTS ====================
+app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   const { shortId } = req.params;
   const { name, email } = req.body;
   if (!name || !name.trim() || !email || !email.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
 
-  const page = formPages.get(shortId);
-  if (!page) return res.status(404).json({ error: 'Page not found' });
+  const form = await FormPage.findOne({ shortId });
+  if (!form) return res.status(404).json({ error: 'Form not found' });
 
-  const owner = users.find(u => u.id === page.userId);
+  const owner = await User.findOne({ id: form.userId });
   if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Bot not connected' });
 
-  const contactValue = email.trim();
+  const contactValue = email.trim().toLowerCase();
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
-  let list = allSubmissions.get(owner.id) || [];
-  const existingIndex = list.findIndex(c => c.contact === contactValue);
-
-  const base = { name: name.trim(), contact: contactValue, shortId, submittedAt: new Date().toISOString() };
-
-  if (existingIndex !== -1) {
-    list[existingIndex] = { ...list[existingIndex], ...base };
+  let contact = await Contact.findOne({ userId: owner.id, contact: contactValue });
+  if (contact) {
+    contact.name = name.trim();
+    contact.shortId = shortId;
+    contact.submittedAt = new Date();
+    contact.status = 'pending';
   } else {
-    list.push({ ...base, telegramChatId: null, subscribedAt: null, status: 'pending' });
+    contact = new Contact({
+      userId: owner.id,
+      shortId,
+      name: name.trim(),
+      contact: contactValue,
+      status: 'pending',
+      submittedAt: new Date()
+    });
   }
-
-  allSubmissions.set(owner.id, list);
+  await contact.save();
 
   pendingSubscribers.set(payload, {
     userId: owner.id,
@@ -981,8 +891,9 @@ app.post('/api/subscribe/:shortId', createFormSubmitLimiter, async (req, res) =>
   res.json({ success: true, deepLink });
 });
 
-app.get('/api/contacts', authenticateToken, (req, res) => {
-  const contacts = (allSubmissions.get(req.user.userId) || []).map(c => ({
+app.get('/api/contacts', authenticateToken, async (req, res) => {
+  const contacts = await Contact.find({ userId: req.user.id }).sort({ submittedAt: -1 });
+  const formatted = contacts.map(c => ({
     name: c.name,
     contact: c.contact,
     status: c.status,
@@ -991,60 +902,114 @@ app.get('/api/contacts', authenticateToken, (req, res) => {
     submittedAt: new Date(c.submittedAt).toLocaleString(),
     subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
   }));
-  res.json({ success: true, contacts });
+  res.json({ success: true, contacts: formatted });
 });
 
-app.post('/api/contacts/delete', authenticateToken, (req, res) => {
+app.post('/api/contacts/delete', authenticateToken, async (req, res) => {
   const { contacts } = req.body;
-  if (!Array.isArray(contacts) || !contacts.length) return res.status(400).json({ error: 'Provide contact array' });
+  if (!Array.isArray(contacts) || contacts.length === 0) return res.status(400).json({ error: 'Provide contact array' });
 
-  const userId = req.user.userId;
-  let list = allSubmissions.get(userId) || [];
-  const initial = list.length;
-  list = list.filter(c => !contacts.includes(c.contact));
-  allSubmissions.set(userId, list);
+  const result = await Contact.deleteMany({
+    userId: req.user.id,
+    contact: { $in: contacts }
+  });
 
-  res.json({ success: true, deletedCount: initial - list.length, remaining: list.length });
+  res.json({ success: true, deletedCount: result.deletedCount });
 });
 
-// ======================== BROADCAST ROUTES ========================
+// ==================== BROADCASTING ====================
+async function executeBroadcast(userId, message) {
+  const bot = activeBots.get(userId);
+  if (!bot) return { sent: 0, failed: 0, total: 0, error: 'Bot not connected' };
 
-function incrementDailyBroadcast(userId) {
-  const today = getTodayDateString();
-  const key = `\( {userId}_ \){today}`;
-  const current = userBroadcastDaily.get(key) || 0;
-  userBroadcastDaily.set(key, current + 1);
-  return current + 1;
-}
+  const sanitizedMessage = sanitizeTelegramHtml(message);
+  const numberedChunks = splitTelegramMessage(sanitizedMessage);
 
-setInterval(() => {
-  const today = getTodayDateString();
-  for (const key of userBroadcastDaily.keys()) {
-    if (!key.endsWith(today)) {
-      userBroadcastDaily.delete(key);
+  const targets = await Contact.find({ userId, status: 'subscribed', telegramChatId: { $exists: true } });
+  if (targets.length === 0) return { sent: 0, failed: 0, total: 0 };
+
+  const batches = [];
+  for (let i = 0; i < targets.length; i += BATCH_SIZE) {
+    batches.push(targets.slice(i, i + BATCH_SIZE));
+  }
+
+  let sent = 0, failed = 0;
+
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i];
+    for (const target of batch) {
+      try {
+        for (const chunk of numberedChunks) {
+          await bot.telegram.sendMessage(target.telegramChatId, chunk, { parse_mode: 'HTML' });
+        }
+        sent++;
+      } catch (err) {
+        failed++;
+        const isBlocked = err.response?.error_code === 403 ||
+          /blocked|kicked|forbidden|chat not found|user is deactivated/i.test(err.message || '');
+        if (isBlocked) {
+          target.status = 'unsubscribed';
+          target.unsubscribedAt = new Date();
+          target.telegramChatId = null;
+          await target.save();
+        }
+      }
+    }
+    if (i < batches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL_MS));
     }
   }
-}, 60 * 60 * 1000);
+
+  return { sent, failed, total: targets.length };
+}
+
+setInterval(async () => {
+  const now = new Date();
+  const due = await ScheduledBroadcast.find({
+    status: 'pending',
+    scheduledTime: { $lte: now }
+  });
+
+  for (const task of due) {
+    task.status = 'sent';
+    await task.save();
+
+    const result = await executeBroadcast(task.userId, task.message);
+
+    const user = await User.findOne({ id: task.userId });
+    if (user && user.isTelegramConnected && activeBots.has(user.id)) {
+      let reportText = `<b>Scheduled Broadcast Report</b>\n\n`;
+      if (result.error) {
+        reportText += `<b>Failed:</b> ${escapeHtml(result.error)}`;
+      } else {
+        const emoji = result.failed === 0 ? '✅' : '⚠️';
+        reportText += `\( {emoji} <b> \){result.sent} of ${result.total}</b> delivered.\n`;
+        if (result.failed > 0) reportText += `${result.failed} failed.`;
+      }
+      reportText += `\n\nSent: ${new Date().toLocaleString()}`;
+
+      try {
+        await activeBots.get(user.id).telegram.sendMessage(user.telegramChatId, reportText, { parse_mode: 'HTML' });
+      } catch (err) {
+        console.error(`Failed to send report to ${user.email}:`, err.message);
+      }
+    }
+
+    await ScheduledBroadcast.deleteOne({ broadcastId: task.broadcastId });
+  }
+}, 60000);
 
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
-  const { message, recipients = 'all' } = req.body;
+  const { message } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  const limits = getUserLimits(user);
-  const todayCount = incrementDailyBroadcast(req.user.userId);
-
-  if (todayCount > limits.dailyBroadcasts) {
-    return res.status(403).json({ 
-      error: `Daily limit reached: ${limits.dailyBroadcasts === Infinity ? 'Unlimited (subscribed)' : limits.dailyBroadcasts} broadcasts per day.` 
-    });
+  const todayCount = await incrementDailyBroadcast(req.user.id);
+  const limits = getUserLimits(req.user);
+  if (todayCount > limits.dailyBroadcasts && limits.dailyBroadcasts !== Infinity) {
+    return res.status(403).json({ error: 'Daily broadcast limit reached.' });
   }
 
-  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
-  const result = await executeBroadcast(req.user.userId, sanitizedMessage);
-
+  const result = await executeBroadcast(req.user.id, message.trim());
   res.json({ success: true, ...result });
 });
 
@@ -1052,23 +1017,10 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
-  const user = users.find(u => u.id === req.user.userId);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  const limits = getUserLimits(user);
-  const todayCount = incrementDailyBroadcast(req.user.userId);
-
-  if (todayCount > limits.dailyBroadcasts) {
-    return res.status(403).json({ 
-      error: `Daily limit reached: ${limits.dailyBroadcasts === Infinity ? 'Unlimited (subscribed)' : limits.dailyBroadcasts} broadcasts per day.` 
-    });
-  }
-
-  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
-
-  if (scheduledTime === 'now') {
-    const result = await executeBroadcast(user.id, sanitizedMessage);
-    return res.json({ success: true, ...result, immediate: true });
+  const todayCount = await incrementDailyBroadcast(req.user.id);
+  const limits = getUserLimits(req.user);
+  if (todayCount > limits.dailyBroadcasts && limits.dailyBroadcasts !== Infinity) {
+    return res.status(403).json({ error: 'Daily broadcast limit reached.' });
   }
 
   const time = new Date(scheduledTime);
@@ -1076,73 +1028,77 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Invalid future time' });
   }
 
-  const broadcastId = scheduleBroadcast(user.id, sanitizedMessage, recipients, scheduledTime);
+  const broadcast = await ScheduledBroadcast.create({
+    broadcastId: uuidv4(),
+    userId: req.user.id,
+    message: sanitizeTelegramHtml(message.trim()),
+    recipients,
+    scheduledTime: time
+  });
 
   res.json({
     success: true,
-    broadcastId,
+    broadcastId: broadcast.broadcastId,
     scheduledTime: time.toISOString()
   });
 });
 
-app.get('/api/broadcast/scheduled', authenticateToken, (req, res) => {
-  const scheduled = Array.from(scheduledBroadcasts.values())
-    .filter(t => t.userId === req.user.userId && t.status === 'pending')
-    .map(t => ({
-      broadcastId: t.broadcastId,
-      message: t.message.substring(0, 100) + (t.message.length > 100 ? '...' : ''),
-      scheduledTime: new Date(t.scheduledTime).toISOString(),
-      status: t.status,
-      recipients: t.recipients,
-      isEditable: true
-    }))
-    .sort((a, b) => new Date(b.scheduledTime) - new Date(a.scheduledTime));
+app.get('/api/broadcast/scheduled', authenticateToken, async (req, res) => {
+  const scheduled = await ScheduledBroadcast.find({
+    userId: req.user.id,
+    status: 'pending'
+  }).sort({ scheduledTime: 1 });
 
-  res.json({ success: true, scheduled });
+  const formatted = scheduled.map(s => ({
+    broadcastId: s.broadcastId,
+    message: s.message.substring(0, 100) + (s.message.length > 100 ? '...' : ''),
+    scheduledTime: s.scheduledTime.toISOString(),
+    status: s.status,
+    recipients: s.recipients
+  }));
+
+  res.json({ success: true, scheduled: formatted });
 });
 
-app.delete('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res) => {
-  const { broadcastId } = req.params;
-  const task = scheduledBroadcasts.get(broadcastId);
-  if (!task || task.userId !== req.user.userId) return res.status(404).json({ error: 'Not found' });
-
-  scheduledBroadcasts.delete(broadcastId);
-  saveScheduledBroadcasts();
+app.delete('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req, res) => {
+  const result = await ScheduledBroadcast.deleteOne({
+    broadcastId: req.params.broadcastId,
+    userId: req.user.id
+  });
+  if (result.deletedCount === 0) return res.status(404).json({ error: 'Not found' });
   res.json({ success: true });
 });
 
-app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, (req, res) => {
-  const { broadcastId } = req.params;
+app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req, res) => {
   const { message, scheduledTime, recipients } = req.body;
-  const task = scheduledBroadcasts.get(broadcastId);
-  if (!task || task.userId !== req.user.userId || task.status !== 'pending') return res.status(400).json({ error: 'Cannot edit' });
+  const task = await ScheduledBroadcast.findOne({
+    broadcastId: req.params.broadcastId,
+    userId: req.user.id,
+    status: 'pending'
+  });
 
-  if (message && message.trim()) {
-    task.message = sanitizeTelegramHtml(message.trim());
-  }
+  if (!task) return res.status(400).json({ error: 'Cannot edit this broadcast' });
+
+  if (message && message.trim()) task.message = sanitizeTelegramHtml(message.trim());
   if (recipients) task.recipients = recipients;
-
   if (scheduledTime) {
     const newTime = new Date(scheduledTime);
     if (isNaN(newTime.getTime()) || newTime <= new Date()) return res.status(400).json({ error: 'Invalid future time' });
-    task.scheduledTime = newTime.getTime();
+    task.scheduledTime = newTime;
   }
 
-  scheduledBroadcasts.set(broadcastId, task);
-  saveScheduledBroadcasts();
-  res.json({ success: true, broadcastId, scheduledTime: new Date(task.scheduledTime).toISOString() });
+  await task.save();
+  res.json({ success: true, broadcastId: task.broadcastId, scheduledTime: task.scheduledTime.toISOString() });
 });
 
-app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req, res) => {
-  const { broadcastId } = req.params;
-  const task = scheduledBroadcasts.get(broadcastId);
+app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, async (req, res) => {
+  const task = await ScheduledBroadcast.findOne({
+    broadcastId: req.params.broadcastId,
+    userId: req.user.id
+  });
 
-  if (!task || task.userId !== req.user.userId) {
-    return res.status(404).json({ error: 'Broadcast not found or access denied' });
-  }
-
-  if (task.status !== 'pending') {
-    return res.status(400).json({ error: 'Can only edit pending broadcasts' });
+  if (!task || task.status !== 'pending') {
+    return res.status(404).json({ error: 'Broadcast not found or not editable' });
   }
 
   const scheduledDate = new Date(task.scheduledTime);
@@ -1158,12 +1114,10 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req
   });
 });
 
-// ======================== ADMIN LIMITS PAGE WITH USER STATS ========================
-
-app.get('/admin-limits', (req, res) => {
-  // Calculate stats
-  const totalUsers = users.length;
-  const payingUsers = users.filter(u => hasActiveSubscription(u)).length;
+// ==================== ADMIN LIMITS ====================
+app.get('/admin-limits', async (req, res) => {
+  const totalUsers = await User.countDocuments({});
+  const payingUsers = await User.countDocuments({ isSubscribed: true, subscriptionEndDate: { $gt: new Date() } });
 
   const html = `
 <!DOCTYPE html>
@@ -1191,7 +1145,6 @@ app.get('/admin-limits', (req, res) => {
   <div class="container">
     <h1>Server Admin Panel</h1>
 
-    <!-- User Statistics -->
     <div class="stats">
       <div class="stat-box">
         <div class="stat-number">${totalUsers}</div>
@@ -1234,13 +1187,7 @@ app.post('/admin-limits', (req, res) => {
   const { password, daily_broadcast, max_pages, max_forms } = req.body;
 
   if (password !== ADMIN_PASSWORD) {
-    return res.send(`
-      <!DOCTYPE html>
-      <html>
-        <head><style>body{background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;}</style></head>
-        <body><h1>Access Denied<br>Wrong Password</h1></body>
-      </html>
-    `);
+    return res.send(`<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Access Denied<br>Wrong Password</h1></body></html>`);
   }
 
   const newDaily = parseInt(daily_broadcast);
@@ -1248,13 +1195,7 @@ app.post('/admin-limits', (req, res) => {
   const newForms = parseInt(max_forms);
 
   if (isNaN(newDaily) || isNaN(newPages) || isNaN(newForms) || newDaily < 1 || newPages < 1 || newForms < 1) {
-    return res.send(`
-      <!DOCTYPE html>
-      <html>
-        <head><style>body{background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;}</style></head>
-        <body><h1>Invalid Values<br>All limits must be ≥ 1</h1></body>
-      </html>
-    `);
+    return res.send(`<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Invalid Values<br>All limits must be ≥ 1</h1></body></html>`);
   }
 
   DAILY_BROADCAST_LIMIT = newDaily;
@@ -1266,7 +1207,6 @@ app.post('/admin-limits', (req, res) => {
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Limits Updated</title>
   <style>
     body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
@@ -1291,32 +1231,32 @@ app.post('/admin-limits', (req, res) => {
   `);
 });
 
-// ======================== CLEANUP & SERVER START ========================
-
+// ==================== CLEANUP & STARTUP ====================
 setInterval(() => {
   const now = Date.now();
-  for (const [p, d] of pendingSubscribers.entries()) {
-    if (now - d.createdAt > 30 * 60 * 1000) pendingSubscribers.delete(p);
+  for (const [key, data] of pendingSubscribers.entries()) {
+    if (now - data.createdAt > 30 * 60 * 1000) {
+      pendingSubscribers.delete(key);
+    }
   }
 }, 60 * 60 * 1000);
 
-loadScheduledBroadcasts();
-users.forEach(user => { if (user.telegramBotToken) launchUserBot(user); });
+mongoose.connection.once('open', async () => {
+  const usersWithBots = await User.find({ telegramBotToken: { $exists: true, $ne: null } });
+  usersWithBots.forEach(launchUserBot);
+  console.log(`Launched ${usersWithBots.length} existing Telegram bots`);
+});
 
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received - shutting down gracefully');
+  console.log('Shutting down...');
   process.exit(0);
 });
 
 app.use((req, res) => res.status(404).render('404'));
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — COMPLETE & FINAL VERSION');
+  console.log('\nSENDEM SERVER — FINAL VERSION FULLY MIGRATED TO MONGODB');
   console.log(`Server running on http://localhost:${PORT}`);
   console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
-  console.log('Features:');
-  console.log('  • Strict per-form rate limiting (10 per IP per form / 15 min)');
-  console.log('  • No automatic redirect after successful payment');
-  console.log('  • All original functionality preserved');
-  console.log('  • Admin panel now shows Total Users and Paying Users\n');
+  console.log('All original features preserved: per-form rate limiting, scheduled editing, reports, welcome messages, admin stats\n');
 });
