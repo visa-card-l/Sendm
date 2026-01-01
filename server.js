@@ -1158,45 +1158,66 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, (req
   });
 });
 
-// ======================== ADMIN LIMITS PAGE ========================
+// ======================== ADMIN LIMITS PAGE WITH USER STATS ========================
 
 app.get('/admin-limits', (req, res) => {
+  // Calculate stats
+  const totalUsers = users.length;
+  const payingUsers = users.filter(u => hasActiveSubscription(u)).length;
+
   const html = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Server Limits Control</title>
+  <title>Server Admin Panel</title>
   <style>
     body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 500px; }
+    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 600px; }
     h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
+    .stat-box { background: #2d2d2d; padding: 20px; border-radius: 10px; text-align: center; }
+    .stat-number { font-size: 2.5em; font-weight: bold; color: #00ff41; margin: 10px 0; }
+    .stat-label { font-size: 1.1em; color: #aaa; }
     label { display: block; margin: 20px 0 8px; font-size: 1.1em; }
     input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }
-    button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; }
+    button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; margin-top: 20px; }
     button:hover { background: #e6c200; }
     .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }
   </style>
 </head>
 <body>
   <div class="container">
-    <h1>Server Limits Control</h1>
+    <h1>Server Admin Panel</h1>
+
+    <!-- User Statistics -->
+    <div class="stats">
+      <div class="stat-box">
+        <div class="stat-number">${totalUsers}</div>
+        <div class="stat-label">Total Users</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-number">${payingUsers}</div>
+        <div class="stat-label">Paying Users</div>
+      </div>
+    </div>
+
     <form method="POST">
       <label>Owner Password</label>
-      <input type="password" name="password" required placeholder="Enter password">
+      <input type="password" name="password" required placeholder="Enter admin password">
 
-      <label>Daily Broadcasts per User</label>
+      <label>Daily Broadcasts per User (Free)</label>
       <input type="number" name="daily_broadcast" min="1" value="${DAILY_BROADCAST_LIMIT}" required>
 
-      <label>Max Landing Pages per User</label>
+      <label>Max Landing Pages per User (Free)</label>
       <input type="number" name="max_pages" min="1" value="${MAX_LANDING_PAGES}" required>
 
-      <label>Max Forms per User</label>
+      <label>Max Forms per User (Free)</label>
       <input type="number" name="max_forms" min="1" value="${MAX_FORMS}" required>
 
       <div class="current">
-        <strong>Current Limits:</strong><br>
+        <strong>Current Free Tier Limits:</strong><br>
         Broadcasts/day: \( {DAILY_BROADCAST_LIMIT} | Pages: \){MAX_LANDING_PAGES} | Forms: ${MAX_FORMS}
       </div>
 
@@ -1296,5 +1317,6 @@ app.listen(PORT, () => {
   console.log('Features:');
   console.log('  • Strict per-form rate limiting (10 per IP per form / 15 min)');
   console.log('  • No automatic redirect after successful payment');
-  console.log('  • All original functionality preserved\n');
+  console.log('  • All original functionality preserved');
+  console.log('  • Admin panel now shows Total Users and Paying Users\n');
 });
