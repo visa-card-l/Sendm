@@ -48,11 +48,12 @@ mongoose.connect(MONGODB_URI, {
   serverSelectionTimeoutMS: 30000,
   socketTimeoutMS: 45000,
   connectTimeoutMS: 30000,
-}).then(() => console.log('✅ MongoDB connected'))
-  .catch(err => {
-    console.error('MongoDB connection failed:', err.message);
-    process.exit(1);
-  });
+}).then(function() {
+  console.log('✅ MongoDB connected');
+}).catch(function(err) {
+  console.error('MongoDB connection failed:', err.message);
+  process.exit(1);
+});
 
 // ==================== SCHEMAS & MODELS ====================
 
@@ -138,7 +139,7 @@ scheduledBroadcastSchema.index({ status: 1 });
 scheduledBroadcastSchema.index({ scheduledTime: 1 });
 broadcastDailySchema.index({ userId: 1, date: 1 }, { unique: true });
 
-// Active bots & temporary in-memory storage
+// In-memory helpers
 const activeBots = new Map();
 const resetTokens = new Map();
 const pendingSubscribers = new Map();
@@ -163,8 +164,12 @@ const formSubmitLimiter = rateLimit({
   message: { error: 'Too many submissions to this form. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.ip + '::' + req.params.shortId,
-  skip: (req) => !req.params.shortId,
+  keyGenerator: function(req) {
+    return req.ip + '::' + req.params.shortId;
+  },
+  skip: function(req) {
+    return !req.params.shortId;
+  }
 });
 
 // ==================== UTILITIES ====================
@@ -179,7 +184,7 @@ function sanitizeTelegramHtml(unsafe) {
     .replace(/on\w+="[^"]*"/gi, '')
     .replace(/javascript:/gi, '');
 
-  clean = clean.replace(/<\/?([a-z][a-z0-9]*)\b[^>]*>/gi, (match, tagName) => {
+  clean = clean.replace(/<\/?([a-z][a-z0-9]*)\b[^>]*>/gi, function(match, tagName) {
     const tag = tagName.toLowerCase();
     if (!allowedTags.has(tag)) return '';
     if (match.startsWith('</')) return '</' + tag + '>';
@@ -194,7 +199,7 @@ function sanitizeTelegramHtml(unsafe) {
         if (attrName === 'href' && !/^https?:\/\//i.test(attrValue) && !attrValue.startsWith('/')) {
           attrValue = '#';
         }
-        attrs += ` \( {attrName}=" \){attrValue.replace(/"/g, '&quot;')}"`;
+        attrs += ' ' + attrName + '="' + attrValue.replace(/"/g, '&quot;') + '"';
       }
     }
     return '<' + tag + attrs + '>';
@@ -208,9 +213,13 @@ function splitTelegramMessage(text) {
   let current = '';
   const lines = text.split(/\r?\n/);
 
-  for (let line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
     while (line.length > MAX_MSG_LENGTH) {
-      if (current) { chunks.push(current.trim()); current = ''; }
+      if (current) {
+        chunks.push(current.trim());
+        current = '';
+      }
       chunks.push(line.substring(0, MAX_MSG_LENGTH).trim());
       line = line.substring(MAX_MSG_LENGTH);
     }
@@ -225,13 +234,14 @@ function splitTelegramMessage(text) {
 
   if (chunks.length <= 1) return chunks;
   const total = chunks.length;
-  return chunks.map((chunk, i) => {
-    const header = `(\( {i + 1}/ \){total})\n\n`;
+  return chunks.map(function(chunk, i) {
+    const header = '(' + (i + 1) + '/' + total + ')\n\n';
     return header.length + chunk.length > MAX_MSG_LENGTH ? chunk : header + chunk;
   });
 }
 
-function escapeHtml(unsafe = '') {
+function escapeHtml(unsafe) {
+  if (!unsafe) unsafe = '';
   return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
@@ -253,7 +263,7 @@ function getUserLimits(user) {
 async function incrementDailyBroadcast(userId) {
   const today = getTodayDateString();
   const record = await BroadcastDaily.findOneAndUpdate(
-    { userId, date: today },
+    { userId: userId, date: today },
     { $inc: { count: 1 } },
     { upsert: true, new: true }
   );
@@ -261,7 +271,7 @@ async function incrementDailyBroadcast(userId) {
 }
 
 // ==================== JWT AUTH ====================
-const authenticateToken = async (req, res, next) => {
+const authenticateToken = async function(req, res, next) {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : req.query.token;
 
@@ -289,7 +299,7 @@ function launchUserBot(user) {
 
   const bot = new Telegraf(user.telegramBotToken);
 
-  bot.start(async (ctx) => {
+  bot.start(async function(ctx) {
     const payload = ctx.startPayload || '';
     const chatId = ctx.chat.id.toString();
 
@@ -343,17 +353,20 @@ function launchUserBot(user) {
     await ctx.replyWithHTML('<b>Welcome!</b>\n\nSubscribe from the page to get updates.');
   });
 
-  bot.command('status', async (ctx) => {
+  bot.command('status', async function(ctx) {
     await ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>');
   });
 
-  bot.catch((err) => console.error('Bot error for ' + user.email + ':', err));
+  bot.catch(function(err) {
+    console.error('Bot error for ' + user.email + ':', err);
+  });
+
   bot.launch();
   activeBots.set(user.id, bot);
 }
 
 // ==================== AUTH ROUTES ====================
-app.post('/api/auth/register', authLimiter, async (req, res) => {
+app.post('/api/auth/register', authLimiter, async function(req, res) {
   const { fullName, email, password } = req.body;
   if (!fullName || !email || !password) return res.status(400).json({ error: 'All fields required' });
 
@@ -371,12 +384,12 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
   const token = jwt.sign({ userId: newUser.id }, JWT_SECRET, { expiresIn: '7d' });
   res.status(201).json({
     success: true,
-    token,
+    token: token,
     user: { id: newUser.id, fullName: newUser.fullName, email: newUser.email, isTelegramConnected: false }
   });
 });
 
-app.post('/api/auth/login', authLimiter, async (req, res) => {
+app.post('/api/auth/login', authLimiter, async function(req, res) {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
@@ -388,12 +401,12 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
   const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: '7d' });
   res.json({
     success: true,
-    token,
+    token: token,
     user: { id: user.id, fullName: user.fullName, email: user.email, isTelegramConnected: user.isTelegramConnected }
   });
 });
 
-app.get('/api/auth/me', authenticateToken, (req, res) => {
+app.get('/api/auth/me', authenticateToken, function(req, res) {
   res.json({
     user: {
       id: req.user.id,
@@ -404,7 +417,7 @@ app.get('/api/auth/me', authenticateToken, (req, res) => {
   });
 });
 
-app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
+app.post('/api/auth/connect-telegram', authenticateToken, async function(req, res) {
   const { botToken } = req.body;
   if (!botToken || !botToken.trim()) return res.status(400).json({ error: 'Bot token required' });
 
@@ -429,7 +442,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
       success: true,
       message: 'Bot connected!',
       botUsername: '@' + botUsername,
-      startLink
+      startLink: startLink
     });
   } catch (err) {
     console.error('Telegram connect error:', err.message);
@@ -437,7 +450,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
+app.post('/api/auth/change-bot-token', authenticateToken, async function(req, res) {
   const { newBotToken } = req.body;
   if (!newBotToken || !newBotToken.trim()) return res.status(400).json({ error: 'New bot token required' });
 
@@ -462,14 +475,14 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
       success: true,
       message: 'Bot token updated!',
       botUsername: '@' + botUsername,
-      startLink
+      startLink: startLink
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to validate new token' });
   }
 });
 
-app.post('/api/auth/disconnect-telegram', authenticateToken, async (req, res) => {
+app.post('/api/auth/disconnect-telegram', authenticateToken, async function(req, res) {
   if (activeBots.has(req.user.id)) {
     activeBots.get(req.user.id).stop('Disconnected');
     activeBots.delete(req.user.id);
@@ -484,7 +497,7 @@ app.post('/api/auth/disconnect-telegram', authenticateToken, async (req, res) =>
   res.json({ success: true, message: 'Telegram disconnected' });
 });
 
-app.get('/api/auth/bot-status', authenticateToken, (req, res) => {
+app.get('/api/auth/bot-status', authenticateToken, function(req, res) {
   res.json({
     activated: req.user.isTelegramConnected,
     chatId: req.user.telegramChatId || null
@@ -510,7 +523,7 @@ async function send2FACodeViaBot(user, code) {
   }
 }
 
-app.post('/api/auth/forgot-password', async (req, res) => {
+app.post('/api/auth/forgot-password', async function(req, res) {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email required' });
 
@@ -520,15 +533,15 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
   const code = generate2FACode();
   const resetToken = uuidv4();
-  resetTokens.set(resetToken, { userId: user.id, code, expiresAt: Date.now() + 10 * 60 * 1000 });
+  resetTokens.set(resetToken, { userId: user.id, code: code, expiresAt: Date.now() + 10 * 60 * 1000 });
 
   const sent = await send2FACodeViaBot(user, code);
   if (!sent) return res.status(500).json({ error: 'Failed to send code' });
 
-  res.json({ success: true, message: 'Code sent!', resetToken });
+  res.json({ success: true, message: 'Code sent!', resetToken: resetToken });
 });
 
-app.post('/api/auth/verify-reset-code', (req, res) => {
+app.post('/api/auth/verify-reset-code', function(req, res) {
   const { resetToken, code } = req.body;
   if (!resetToken || !code) return res.status(400).json({ error: 'Token and code required' });
 
@@ -542,7 +555,7 @@ app.post('/api/auth/verify-reset-code', (req, res) => {
   res.json({ success: true, message: 'Verified', userId: entry.userId });
 });
 
-app.post('/api/auth/reset-password', async (req, res) => {
+app.post('/api/auth/reset-password', async function(req, res) {
   const { resetToken, newPassword } = req.body;
   if (!resetToken || !newPassword || newPassword.length < 6) return res.status(400).json({ error: 'Valid token and password required' });
 
@@ -563,10 +576,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
 });
 
 // ==================== SUBSCRIPTION ROUTES ====================
-app.get('/api/subscription/status', authenticateToken, async (req, res) => {
+app.get('/api/subscription/status', authenticateToken, async function(req, res) {
   const subscribed = hasActiveSubscription(req.user);
   res.json({
-    subscribed,
+    subscribed: subscribed,
     plan: subscribed ? 'premium-monthly' : 'free',
     endDate: req.user.subscriptionEndDate || null,
     daysLeft: subscribed
@@ -575,7 +588,7 @@ app.get('/api/subscription/status', authenticateToken, async (req, res) => {
   });
 });
 
-app.post('/api/subscription/initiate', authenticateToken, async (req, res) => {
+app.post('/api/subscription/initiate', authenticateToken, async function(req, res) {
   if (hasActiveSubscription(req.user)) {
     return res.status(400).json({ error: 'You already have an active subscription' });
   }
@@ -601,7 +614,8 @@ app.post('/api/subscription/initiate', authenticateToken, async (req, res) => {
       }
     );
 
-    const { authorization_url, reference } = response.data.data;
+    const authorization_url = response.data.data.authorization_url;
+    const reference = response.data.data.reference;
 
     req.user.pendingPaymentReference = reference;
     await req.user.save();
@@ -609,18 +623,17 @@ app.post('/api/subscription/initiate', authenticateToken, async (req, res) => {
     res.json({
       success: true,
       authorizationUrl: authorization_url,
-      reference
+      reference: reference
     });
   } catch (error) {
-    console.error('Paystack init error:', error.response?.data || error.message);
+    console.error('Paystack init error:', error.response ? error.response.data : error.message);
     res.status(500).json({ error: 'Failed to initialize payment' });
   }
 });
 
-app.post('/api/subscription/webhook', async (req, res) => {
+app.post('/api/subscription/webhook', async function(req, res) {
   try {
-    const hash = crypto
-      .createHmac('sha512', PAYSTACK_SECRET_KEY)
+    const hash = crypto.createHmac('sha512', PAYSTACK_SECRET_KEY)
       .update(JSON.stringify(req.body))
       .digest('hex');
 
@@ -631,8 +644,8 @@ app.post('/api/subscription/webhook', async (req, res) => {
     const event = req.body;
 
     if (event.event === 'charge.success') {
-      const { reference, metadata } = event.data;
-      const userId = metadata?.userId;
+      const reference = event.data.reference;
+      const userId = event.data.metadata ? event.data.metadata.userId : null;
 
       if (!userId) return res.status(200).send('OK');
 
@@ -650,7 +663,7 @@ app.post('/api/subscription/webhook', async (req, res) => {
       user.pendingPaymentReference = undefined;
       await user.save();
 
-      console.log(`Subscription activated for \( {user.email} (ref: \){reference})`);
+      console.log('Subscription activated for ' + user.email + ' (ref: ' + reference + ')');
     }
 
     res.status(200).send('OK');
@@ -660,52 +673,28 @@ app.post('/api/subscription/webhook', async (req, res) => {
   }
 });
 
-app.get('/subscription-success', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <title>Payment Successful</title>
-      <style>
-        body {font-family: system-ui, sans-serif; background:#0a0a0a; color:#00ff41; 
-              display:flex; justify-content:center; align-items:center; min-height:100vh; margin:0;}
-        .box {background:#111; padding:60px; border-radius:20px; text-align:center; box-shadow:0 0 30px rgba(0,255,65,0.2);}
-        h1 {margin:0 0 20px; font-size:3em; color:#00ff41;}
-        p {font-size:1.3em; margin:20px 0; line-height:1.6;}
-        a {display:inline-block; margin-top:30px; padding:14px 32px; background:#00ff41; color:#000; 
-           font-weight:bold; text-decoration:none; border-radius:8px; font-size:1.1em;}
-        a:hover {background:#00cc33;}
-      </style>
-    </head>
-    <body>
-      <div class="box">
-        <h1>✔ Payment Successful!</h1>
-        <p>Your subscription is now <strong>active</strong>.</p>
-        <p>You have unlimited broadcasts, landing pages, and forms.</p>
-        <p><a href="/">← Return to Dashboard</a></p>
-      </div>
-    </body>
-    </html>
-  `);
+app.get('/subscription-success', function(req, res) {
+  res.send('<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Payment Successful</title><style>body{font-family:system-ui,sans-serif;background:#0a0a0a;color:#00ff41;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}.box{background:#111;padding:60px;border-radius:20px;text-align:center;box-shadow:0 0 30px rgba(0,255,65,0.2);}h1{margin:0 0 20px;font-size:3em;color:#00ff41;}p{font-size:1.3em;margin:20px 0;line-height:1.6;}a{display:inline-block;margin-top:30px;padding:14px 32px;background:#00ff41;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;font-size:1.1em;}a:hover{background:#00cc33;}</style></head><body><div class="box"><h1>✔ Payment Successful!</h1><p>Your subscription is now <strong>active</strong>.</p><p>You have unlimited broadcasts, landing pages, and forms.</p><p><a href="/">← Return to Dashboard</a></p></div></body></html>');
 });
 
 // ==================== LANDING PAGES ====================
-app.get('/api/pages', authenticateToken, async (req, res) => {
+app.get('/api/pages', authenticateToken, async function(req, res) {
   const pages = await LandingPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
   const host = req.get('host');
   const protocol = req.protocol;
-  const formatted = pages.map(p => ({
-    shortId: p.shortId,
-    title: p.title,
-    createdAt: p.createdAt,
-    updatedAt: p.updatedAt,
-    url: protocol + '://' + host + '/p/' + p.shortId
-  }));
+  const formatted = pages.map(function(p) {
+    return {
+      shortId: p.shortId,
+      title: p.title,
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+      url: protocol + '://' + host + '/p/' + p.shortId
+    };
+  });
   res.json({ pages: formatted });
 });
 
-app.post('/api/pages/save', authenticateToken, async (req, res) => {
+app.post('/api/pages/save', authenticateToken, async function(req, res) {
   const { shortId, title, config } = req.body;
   if (!title || !config || !Array.isArray(config.blocks)) return res.status(400).json({ error: 'Title and config.blocks required' });
 
@@ -718,7 +707,7 @@ app.post('/api/pages/save', authenticateToken, async (req, res) => {
   const finalShortId = shortId || uuidv4().slice(0, 8);
   const now = new Date();
 
-  const cleanBlocks = config.blocks.map(b => {
+  const cleanBlocks = config.blocks.map(function(b) {
     if (!b || b.isEditor || (b.id && (b.id.includes('editor-') || b.id.includes('control-')))) return null;
     if (b.type === 'text') return { type: 'text', tag: b.tag || 'p', content: (b.content || '').trim() };
     if (b.type === 'image') return b.src ? { type: 'image', src: b.src.trim() } : null;
@@ -742,46 +731,47 @@ app.post('/api/pages/save', authenticateToken, async (req, res) => {
   );
 
   const url = req.protocol + '://' + req.get('host') + '/p/' + finalShortId;
-  res.json({ success: true, shortId: finalShortId, url });
+  res.json({ success: true, shortId: finalShortId, url: url });
 });
 
-app.post('/api/pages/delete', authenticateToken, async (req, res) => {
+app.post('/api/pages/delete', authenticateToken, async function(req, res) {
   const { shortId } = req.body;
-  const page = await LandingPage.findOne({ shortId, userId: req.user.id });
+  const page = await LandingPage.findOne({ shortId: shortId, userId: req.user.id });
   if (!page) return res.status(404).json({ error: 'Page not found' });
-  await LandingPage.deleteOne({ shortId });
+  await LandingPage.deleteOne({ shortId: shortId });
   res.json({ success: true });
 });
 
-app.get('/p/:shortId', async (req, res) => {
+app.get('/p/:shortId', async function(req, res) {
   const page = await LandingPage.findOne({ shortId: req.params.shortId });
   if (!page) return res.status(404).render('404');
   res.render('landing', { title: page.title, blocks: page.config.blocks });
 });
 
-// NO AUTH — exactly like your original code
-app.get('/api/page/:shortId', async (req, res) => {
+app.get('/api/page/:shortId', async function(req, res) {
   const page = await LandingPage.findOne({ shortId: req.params.shortId });
   if (!page) return res.status(404).json({ error: 'Page not found' });
   res.json({ shortId: page.shortId, title: page.title, config: page.config });
 });
 
 // ==================== FORMS ====================
-app.get('/api/forms', authenticateToken, async (req, res) => {
+app.get('/api/forms', authenticateToken, async function(req, res) {
   const forms = await FormPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
   const host = req.get('host');
   const protocol = req.protocol;
-  const formatted = forms.map(f => ({
-    shortId: f.shortId,
-    title: f.title,
-    createdAt: f.createdAt,
-    updatedAt: f.updatedAt,
-    url: protocol + '://' + host + '/f/' + f.shortId
-  }));
+  const formatted = forms.map(function(f) {
+    return {
+      shortId: f.shortId,
+      title: f.title,
+      createdAt: f.createdAt,
+      updatedAt: f.updatedAt,
+      url: protocol + '://' + host + '/f/' + f.shortId
+    };
+  });
   res.json({ forms: formatted });
 });
 
-app.post('/api/forms/save', authenticateToken, async (req, res) => {
+app.post('/api/forms/save', authenticateToken, async function(req, res) {
   const { shortId, title, state, welcomeMessage } = req.body;
   if (!title || !state) return res.status(400).json({ error: 'Title and state required' });
 
@@ -817,26 +807,25 @@ app.post('/api/forms/save', authenticateToken, async (req, res) => {
   );
 
   const url = req.protocol + '://' + req.get('host') + '/f/' + finalShortId;
-  res.json({ success: true, shortId: finalShortId, url });
+  res.json({ success: true, shortId: finalShortId, url: url });
 });
 
-app.post('/api/forms/delete', authenticateToken, async (req, res) => {
+app.post('/api/forms/delete', authenticateToken, async function(req, res) {
   const { shortId } = req.body;
-  const form = await FormPage.findOne({ shortId, userId: req.user.id });
+  const form = await FormPage.findOne({ shortId: shortId, userId: req.user.id });
   if (!form) return res.status(404).json({ error: 'Form not found' });
-  await FormPage.deleteOne({ shortId });
-  await Contact.deleteMany({ shortId, userId: req.user.id });
+  await FormPage.deleteOne({ shortId: shortId });
+  await Contact.deleteMany({ shortId: shortId, userId: req.user.id });
   res.json({ success: true });
 });
 
-app.get('/f/:shortId', async (req, res) => {
+app.get('/f/:shortId', async function(req, res) {
   const form = await FormPage.findOne({ shortId: req.params.shortId });
   if (!form) return res.status(404).render('404');
   res.render('form', { title: form.title, state: form.state });
 });
 
-// NO AUTH — exactly like your original code
-app.get('/api/form/:shortId', async (req, res) => {
+app.get('/api/form/:shortId', async function(req, res) {
   const form = await FormPage.findOne({ shortId: req.params.shortId });
   if (!form) return res.status(404).json({ error: 'Form not found' });
   res.json({
@@ -848,12 +837,12 @@ app.get('/api/form/:shortId', async (req, res) => {
 });
 
 // ==================== SUBSCRIBE & CONTACTS ====================
-app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
-  const { shortId } = req.params;
+app.post('/api/subscribe/:shortId', formSubmitLimiter, async function(req, res) {
+  const shortId = req.params.shortId;
   const { name, email } = req.body;
   if (!name || !name.trim() || !email || !email.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
 
-  const form = await FormPage.findOne({ shortId });
+  const form = await FormPage.findOne({ shortId: shortId });
   if (!form) return res.status(404).json({ error: 'Form not found' });
 
   const owner = await User.findOne({ id: form.userId });
@@ -871,7 +860,7 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   } else {
     contact = new Contact({
       userId: owner.id,
-      shortId,
+      shortId: shortId,
       name: name.trim(),
       contact: contactValue,
       status: 'pending',
@@ -882,31 +871,33 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
 
   pendingSubscribers.set(payload, {
     userId: owner.id,
-    shortId,
+    shortId: shortId,
     name: name.trim(),
     contact: contactValue,
     createdAt: Date.now()
   });
 
   const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
-  res.json({ success: true, deepLink });
+  res.json({ success: true, deepLink: deepLink });
 });
 
-app.get('/api/contacts', authenticateToken, async (req, res) => {
+app.get('/api/contacts', authenticateToken, async function(req, res) {
   const contacts = await Contact.find({ userId: req.user.id }).sort({ submittedAt: -1 });
-  const formatted = contacts.map(c => ({
-    name: c.name,
-    contact: c.contact,
-    status: c.status,
-    telegramChatId: c.telegramChatId || null,
-    pageId: c.shortId,
-    submittedAt: new Date(c.submittedAt).toLocaleString(),
-    subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
-  }));
+  const formatted = contacts.map(function(c) {
+    return {
+      name: c.name,
+      contact: c.contact,
+      status: c.status,
+      telegramChatId: c.telegramChatId || null,
+      pageId: c.shortId,
+      submittedAt: new Date(c.submittedAt).toLocaleString(),
+      subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
+    };
+  });
   res.json({ success: true, contacts: formatted });
 });
 
-app.post('/api/contacts/delete', authenticateToken, async (req, res) => {
+app.post('/api/contacts/delete', authenticateToken, async function(req, res) {
   const { contacts } = req.body;
   if (!Array.isArray(contacts) || contacts.length === 0) return res.status(400).json({ error: 'Provide contact array' });
 
@@ -926,7 +917,7 @@ async function executeBroadcast(userId, message) {
   const sanitizedMessage = sanitizeTelegramHtml(message);
   const numberedChunks = splitTelegramMessage(sanitizedMessage);
 
-  const targets = await Contact.find({ userId, status: 'subscribed', telegramChatId: { $exists: true } });
+  const targets = await Contact.find({ userId: userId, status: 'subscribed', telegramChatId: { $exists: true } });
   if (targets.length === 0) return { sent: 0, failed: 0, total: 0 };
 
   const batches = [];
@@ -934,20 +925,22 @@ async function executeBroadcast(userId, message) {
     batches.push(targets.slice(i, i + BATCH_SIZE));
   }
 
-  let sent = 0, failed = 0;
+  let sent = 0;
+  let failed = 0;
 
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i];
-    for (const target of batch) {
+    for (let j = 0; j < batch.length; j++) {
+      const target = batch[j];
       try {
-        for (const chunk of numberedChunks) {
-          await bot.telegram.sendMessage(target.telegramChatId, chunk, { parse_mode: 'HTML' });
+        for (let k = 0; k < numberedChunks.length; k++) {
+          await bot.telegram.sendMessage(target.telegramChatId, numberedChunks[k], { parse_mode: 'HTML' });
         }
         sent++;
       } catch (err) {
         failed++;
-        const isBlocked = err.response?.error_code === 403 ||
-          /blocked|kicked|forbidden|chat not found|user is deactivated/i.test(err.message || '');
+        const isBlocked = err.response && err.response.error_code === 403 ||
+          (err.message && /blocked|kicked|forbidden|chat not found|user is deactivated/i.test(err.message));
         if (isBlocked) {
           target.status = 'unsubscribed';
           target.unsubscribedAt = new Date();
@@ -957,21 +950,23 @@ async function executeBroadcast(userId, message) {
       }
     }
     if (i < batches.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL_MS));
+      await new Promise(function(resolve) { setTimeout(resolve, BATCH_INTERVAL_MS); });
     }
   }
 
-  return { sent, failed, total: targets.length };
+  return { sent: sent, failed: failed, total: targets.length };
 }
 
-setInterval(async () => {
+// Scheduled broadcast processor - using string concatenation only
+setInterval(async function() {
   const now = new Date();
   const due = await ScheduledBroadcast.find({
     status: 'pending',
     scheduledTime: { $lte: now }
   });
 
-  for (const task of due) {
+  for (let i = 0; i < due.length; i++) {
+    const task = due[i];
     task.status = 'sent';
     await task.save();
 
@@ -979,20 +974,24 @@ setInterval(async () => {
 
     const user = await User.findOne({ id: task.userId });
     if (user && user.isTelegramConnected && activeBots.has(user.id)) {
-      let reportText = `<b>Scheduled Broadcast Report</b>\n\n`;
+      let reportText = '<b>Scheduled Broadcast Report</b>\n\n';
+
       if (result.error) {
-        reportText += `<b>Failed:</b> ${escapeHtml(result.error)}`;
+        reportText += '<b>Failed to send</b>\n' + escapeHtml(result.error);
       } else {
         const emoji = result.failed === 0 ? '✅' : '⚠️';
-        reportText += `\( {emoji} <b> \){result.sent} of ${result.total}</b> delivered.\n`;
-        if (result.failed > 0) reportText += `${result.failed} failed.`;
+        reportText += emoji + ' <b>' + result.sent + ' of ' + result.total + '</b> contacts received the message.\n';
+        if (result.failed > 0) {
+          reportText += result.failed + ' failed to deliver.';
+        }
       }
-      reportText += `\n\nSent: ${new Date().toLocaleString()}`;
+
+      reportText += '\n\nSent on: ' + new Date().toLocaleString();
 
       try {
         await activeBots.get(user.id).telegram.sendMessage(user.telegramChatId, reportText, { parse_mode: 'HTML' });
       } catch (err) {
-        console.error(`Failed to send report to ${user.email}:`, err.message);
+        console.error('Failed to send report to ' + user.email + ': ' + err.message);
       }
     }
 
@@ -1000,7 +999,7 @@ setInterval(async () => {
   }
 }, 60000);
 
-app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
+app.post('/api/broadcast/now', authenticateToken, async function(req, res) {
   const { message } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
@@ -1011,10 +1010,10 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   }
 
   const result = await executeBroadcast(req.user.id, message.trim());
-  res.json({ success: true, ...result });
+  res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total });
 });
 
-app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
+app.post('/api/broadcast/schedule', authenticateToken, async function(req, res) {
   const { message, scheduledTime, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
@@ -1033,7 +1032,7 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
     broadcastId: uuidv4(),
     userId: req.user.id,
     message: sanitizeTelegramHtml(message.trim()),
-    recipients,
+    recipients: recipients,
     scheduledTime: time
   });
 
@@ -1044,24 +1043,26 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
   });
 });
 
-app.get('/api/broadcast/scheduled', authenticateToken, async (req, res) => {
+app.get('/api/broadcast/scheduled', authenticateToken, async function(req, res) {
   const scheduled = await ScheduledBroadcast.find({
     userId: req.user.id,
     status: 'pending'
   }).sort({ scheduledTime: 1 });
 
-  const formatted = scheduled.map(s => ({
-    broadcastId: s.broadcastId,
-    message: s.message.substring(0, 100) + (s.message.length > 100 ? '...' : ''),
-    scheduledTime: s.scheduledTime.toISOString(),
-    status: s.status,
-    recipients: s.recipients
-  }));
+  const formatted = scheduled.map(function(s) {
+    return {
+      broadcastId: s.broadcastId,
+      message: s.message.substring(0, 100) + (s.message.length > 100 ? '...' : ''),
+      scheduledTime: s.scheduledTime.toISOString(),
+      status: s.status,
+      recipients: s.recipients
+    };
+  });
 
   res.json({ success: true, scheduled: formatted });
 });
 
-app.delete('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req, res) => {
+app.delete('/api/broadcast/scheduled/:broadcastId', authenticateToken, async function(req, res) {
   const result = await ScheduledBroadcast.deleteOne({
     broadcastId: req.params.broadcastId,
     userId: req.user.id
@@ -1070,7 +1071,7 @@ app.delete('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (re
   res.json({ success: true });
 });
 
-app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req, res) => {
+app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async function(req, res) {
   const { message, scheduledTime, recipients } = req.body;
   const task = await ScheduledBroadcast.findOne({
     broadcastId: req.params.broadcastId,
@@ -1092,7 +1093,7 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req
   res.json({ success: true, broadcastId: task.broadcastId, scheduledTime: task.scheduledTime.toISOString() });
 });
 
-app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, async (req, res) => {
+app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, async function(req, res) {
   const task = await ScheduledBroadcast.findOne({
     broadcastId: req.params.broadcastId,
     userId: req.user.id
@@ -1102,7 +1103,6 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, asyn
     return res.status(404).json({ error: 'Broadcast not found or not editable' });
   }
 
-  // Correctly convert UTC to local time for datetime-local input
   const scheduledDate = new Date(task.scheduledTime);
   const offsetMs = scheduledDate.getTimezoneOffset() * 60000;
   const localDate = new Date(scheduledDate.getTime() + offsetMs);
@@ -1117,19 +1117,19 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, asyn
 });
 
 // ==================== ADMIN LIMITS ====================
-app.get('/admin-limits', async (req, res) => {
+app.get('/admin-limits', async function(req, res) {
   const totalUsers = await User.countDocuments({});
   const payingUsers = await User.countDocuments({ isSubscribed: true, subscriptionEndDate: { $gt: new Date() } });
 
-  const html = `<!-- Your full admin panel HTML from original code -->`;
-  res.send(html); // (omitted for brevity — use your original HTML)
+  const html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n  <title>Server Admin Panel</title>\n  <style>\n    body { font-family: \'Segoe UI\', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }\n    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 600px; }\n    h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }\n    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }\n    .stat-box { background: #2d2d2d; padding: 20px; border-radius: 10px; text-align: center; }\n    .stat-number { font-size: 2.5em; font-weight: bold; color: #00ff41; margin: 10px 0; }\n    .stat-label { font-size: 1.1em; color: #aaa; }\n    label { display: block; margin: 20px 0 8px; font-size: 1.1em; }\n    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }\n    button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; margin-top: 20px; }\n    button:hover { background: #e6c200; }\n    .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }\n  </style>\n</head>\n<body>\n  <div class="container">\n    <h1>Server Admin Panel</h1>\n\n    <div class="stats">\n      <div class="stat-box">\n        <div class="stat-number">' + totalUsers + '</div>\n        <div class="stat-label">Total Users</div>\n      </div>\n      <div class="stat-box">\n        <div class="stat-number">' + payingUsers + '</div>\n        <div class="stat-label">Paying Users</div>\n      </div>\n    </div>\n\n    <form method="POST">\n      <label>Owner Password</label>\n      <input type="password" name="password" required placeholder="Enter admin password">\n\n      <label>Daily Broadcasts per User (Free)</label>\n      <input type="number" name="daily_broadcast" min="1" value="' + DAILY_BROADCAST_LIMIT + '" required>\n\n      <label>Max Landing Pages per User (Free)</label>\n      <input type="number" name="max_pages" min="1" value="' + MAX_LANDING_PAGES + '" required>\n\n      <label>Max Forms per User (Free)</label>\n      <input type="number" name="max_forms" min="1" value="' + MAX_FORMS + '" required>\n\n      <div class="current">\n        <strong>Current Free Tier Limits:</strong><br>\n        Broadcasts/day: ' + DAILY_BROADCAST_LIMIT + ' | Pages: ' + MAX_LANDING_PAGES + ' | Forms: ' + MAX_FORMS + '\n      </div>\n\n      <button type="submit">Update Limits</button>\n    </form>\n  </div>\n</body>\n</html>';
+  res.send(html);
 });
 
-app.post('/admin-limits', (req, res) => {
+app.post('/admin-limits', function(req, res) {
   const { password, daily_broadcast, max_pages, max_forms } = req.body;
 
   if (password !== ADMIN_PASSWORD) {
-    return res.send(`<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Access Denied<br>Wrong Password</h1></body></html>`);
+    return res.send('<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Access Denied<br>Wrong Password</h1></body></html>');
   }
 
   const newDaily = parseInt(daily_broadcast);
@@ -1137,42 +1137,49 @@ app.post('/admin-limits', (req, res) => {
   const newForms = parseInt(max_forms);
 
   if (isNaN(newDaily) || isNaN(newPages) || isNaN(newForms) || newDaily < 1 || newPages < 1 || newForms < 1) {
-    return res.send(`<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Invalid Values<br>All limits must be ≥ 1</h1></body></html>`);
+    return res.send('<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Invalid Values<br>All limits must be ≥ 1</h1></body></html>');
   }
 
   DAILY_BROADCAST_LIMIT = newDaily;
   MAX_LANDING_PAGES = newPages;
   MAX_FORMS = newForms;
 
-  res.send(`<!-- Success page HTML from original -->`);
+  res.send('<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Limits Updated</title>\n  <style>\n    body { font-family: \'Segoe UI\', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }\n    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }\n    h1 { color: #4caf50; }\n    .success { font-size: 1.2em; margin: 20px 0; }\n    a { color: #ffd700; text-decoration: none; font-weight: bold; }\n    a:hover { text-decoration: underline; }\n  </style>\n</head>\n<body>\n  <div class="container">\n    <h1>Success!</h1>\n    <p class="success">Server limits updated successfully:</p>\n    <p><strong>Daily Broadcasts:</strong> ' + DAILY_BROADCAST_LIMIT + '<br>\n       <strong>Max Pages:</strong> ' + MAX_LANDING_PAGES + '<br>\n       <strong>Max Forms:</strong> ' + MAX_FORMS + '</p>\n    <p><a href="/admin-limits">← Back to Control Panel</a></p>\n  </div>\n</body>\n</html>');
 });
 
 // ==================== CLEANUP & STARTUP ====================
-setInterval(() => {
+setInterval(function() {
   const now = Date.now();
-  for (const [key, data] of pendingSubscribers.entries()) {
+  const keys = Array.from(pendingSubscribers.keys());
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const data = pendingSubscribers.get(key);
     if (now - data.createdAt > 30 * 60 * 1000) {
       pendingSubscribers.delete(key);
     }
   }
 }, 60 * 60 * 1000);
 
-mongoose.connection.once('open', async () => {
+mongoose.connection.once('open', async function() {
   const usersWithBots = await User.find({ telegramBotToken: { $exists: true, $ne: null } });
-  usersWithBots.forEach(launchUserBot);
-  console.log(`Launched ${usersWithBots.length} existing Telegram bots`);
+  for (let i = 0; i < usersWithBots.length; i++) {
+    launchUserBot(usersWithBots[i]);
+  }
+  console.log('Launched ' + usersWithBots.length + ' existing Telegram bots');
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', function() {
   console.log('Shutting down...');
   process.exit(0);
 });
 
-app.use((req, res) => res.status(404).render('404'));
+app.use(function(req, res) {
+  res.status(404).render('404');
+});
 
-app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FINAL VERSION FULLY MIGRATED TO MONGODB');
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`Admin panel: http://localhost:${PORT}/admin-limits`);
-  console.log('All features preserved exactly as in your original code\n');
+app.listen(PORT, function() {
+  console.log('\nSENDEM SERVER — FINAL MONGODB VERSION');
+  console.log('Server running on http://localhost:' + PORT);
+  console.log('Admin panel: http://localhost:' + PORT + '/admin-limits');
+  console.log('All features preserved, using string concatenation for messages\n');
 });
