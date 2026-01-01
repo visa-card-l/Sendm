@@ -1,7 +1,7 @@
 {
   "name": "sendm-server",
   "version": "1.0.0",
-  "description": "Backend server for Sendm 2FA - Telegram broadcast and subscription management with Paystack integration",
+  "description": "Sendm – Telegram-powered landing pages, forms, broadcasts & subscriptions with MongoDB persistence",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -9,11 +9,13 @@
   },
   "keywords": [
     "telegram",
+    "bot",
+    "landing-page",
+    "form",
     "broadcast",
-    "paystack",
     "subscription",
-    "nodejs",
-    "express"
+    "paystack",
+    "mongodb"
   ],
   "author": "",
   "license": "MIT",
@@ -21,16 +23,19 @@
     "axios": "^1.7.7",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
+    "crypto": "^1.0.1",
     "dotenv": "^16.4.5",
     "ejs": "^3.1.10",
-    "express": "^4.19.2",
-    "express-rate-limit": "^7.4.0",
+    "express": "^4.21.1",
+    "express-rate-limit": "^7.4.1",
     "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.7.2",
+    "node-cache": "^5.1.2",
     "telegraf": "^4.16.3",
     "uuid": "^10.0.0"
   },
   "devDependencies": {
-    "nodemon": "^3.1.4"
+    "nodemon": "^3.1.7"
   },
   "engines": {
     "node": ">=18.0.0"
