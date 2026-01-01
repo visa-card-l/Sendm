@@ -132,12 +132,9 @@ const Contact = mongoose.model('Contact', contactSchema);
 const ScheduledBroadcast = mongoose.model('ScheduledBroadcast', scheduledBroadcastSchema);
 const BroadcastDaily = mongoose.model('BroadcastDaily', broadcastDailySchema);
 
-// Indexes
-userSchema.index({ email: 1 });
+// Indexes (only the ones NOT already created by unique: true)
 landingPageSchema.index({ userId: 1 });
-landingPageSchema.index({ shortId: 1 });
 formPageSchema.index({ userId: 1 });
-formPageSchema.index({ shortId: 1 });
 contactSchema.index({ userId: 1 });
 contactSchema.index({ userId: 1, contact: 1 });
 contactSchema.index({ userId: 1, status: 1 });
