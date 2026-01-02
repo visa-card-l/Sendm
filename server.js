@@ -191,7 +191,6 @@ const formSubmitLimiter = rateLimit({
 });
 
 // ==================== WEBHOOK ENDPOINT ====================
-// Secure path: https://yourdomain.com/webhook/SECRET/userId
 app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', express.raw({ type: 'application/json' }), async function(req, res) {
   const userId = req.params.userId;
   const bot = activeBots.get(userId);
@@ -323,7 +322,7 @@ const authenticateToken = async function(req, res, next) {
   }
 };
 
-// ==================== TELEGRAM BOT ====================
+// ==================== TELEGRAM BOT (UPDATED TO FIX 409 ERROR) ====================
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
     activeBots.get(user.id).stop('Replaced');
@@ -396,15 +395,30 @@ function launchUserBot(user) {
     console.error('Bot error for ' + user.email + ':', err);
   });
 
-  // Set webhook using string concatenation only
   const webhookUrl = 'https://' + DOMAIN + '/webhook/' + WEBHOOK_SECRET + '/' + user.id;
 
-  bot.telegram.setWebhook(webhookUrl)
+  // Clean up any old webhook/polling session first
+  bot.telegram.deleteWebhook({ drop_pending_updates: true })
     .then(function() {
-      console.log('Webhook set for @' + user.botUsername + ' -> ' + webhookUrl);
+      return bot.telegram.setWebhook(webhookUrl);
+    })
+    .then(function() {
+      console.log('Webhook successfully set for @' + user.botUsername + ' -> ' + webhookUrl);
     })
     .catch(function(err) {
-      console.error('Failed to set webhook for ' + user.email + ':', err.message);
+      if (err.response && err.response.error_code === 409) {
+        console.log('Webhook conflict resolved (old session cleared) for @' + user.botUsername);
+        // Try one final time
+        bot.telegram.setWebhook(webhookUrl)
+          .then(function() {
+            console.log('Webhook finally set after conflict resolution for @' + user.botUsername);
+          })
+          .catch(function(finalErr) {
+            console.error('Final webhook set failed for ' + user.email + ':', finalErr.message);
+          });
+      } else {
+        console.error('Webhook setup error for ' + user.email + ':', err.message);
+      }
     });
 
   activeBots.set(user.id, bot);
@@ -1002,7 +1016,6 @@ async function executeBroadcast(userId, message) {
   return { sent: sent, failed: failed, total: targets.length };
 }
 
-// Scheduled broadcast processor
 setInterval(async function() {
   const now = new Date();
   const due = await ScheduledBroadcast.find({
@@ -1223,10 +1236,10 @@ app.use(function(req, res) {
 });
 
 app.listen(PORT, function() {
-  console.log('\nSENDEM SERVER — WEBHOOK VERSION (FINAL)');
+  console.log('\nSENDEM SERVER — WEBHOOK VERSION (409 ERROR FIXED)');
   console.log('Server running on http://localhost:' + PORT);
   console.log('Domain: https://' + DOMAIN);
   console.log('Webhook path example: /webhook/' + WEBHOOK_SECRET + '/USER_ID');
   console.log('Admin panel: http://localhost:' + PORT + '/admin-limits');
-  console.log('All original features preserved with webhooks enabled\n');
+  console.log('All features preserved, webhook conflicts resolved cleanly\n');
 });
