@@ -20,6 +20,23 @@ const JWT_SECRET = process.env.JWT_SECRET || 'fallback_weak_secret_change_me_imm
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || 'sk_test_fallback_change_me';
 const PAYSTACK_PUBLIC_KEY = process.env.PAYSTACK_PUBLIC_KEY || 'pk_test_fallback_change_me';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'midas';
+const DOMAIN = process.env.DOMAIN;
+let WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+
+if (!DOMAIN) {
+  console.error('ERROR: DOMAIN environment variable is required for webhooks!');
+  process.exit(1);
+}
+
+if (!WEBHOOK_SECRET || WEBHOOK_SECRET.trim() === '') {
+  WEBHOOK_SECRET = crypto.randomBytes(32).toString('hex');
+  console.warn('⚠️  WARNING: WEBHOOK_SECRET not set in .env! Generated temporary one:');
+  console.warn('     ' + WEBHOOK_SECRET);
+  console.warn('     Add it to your .env file to keep it permanent across restarts:');
+  console.warn('     WEBHOOK_SECRET=' + WEBHOOK_SECRET + '\n');
+} else {
+  console.log('Webhook secret loaded from .env');
+}
 
 if (JWT_SECRET.includes('fallback')) {
   console.warn('⚠️  WARNING: JWT_SECRET not set in .env! Using insecure fallback.');
@@ -151,6 +168,7 @@ app.use(express.static('public'));
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.raw({ type: 'application/json' })); // Required for webhook
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -170,6 +188,23 @@ const formSubmitLimiter = rateLimit({
   skip: function(req) {
     return !req.params.shortId;
   }
+});
+
+// ==================== WEBHOOK ENDPOINT ====================
+// Secure path: https://yourdomain.com/webhook/SECRET/userId
+app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', express.raw({ type: 'application/json' }), async function(req, res) {
+  const userId = req.params.userId;
+  const bot = activeBots.get(userId);
+
+  if (bot) {
+    try {
+      await bot.handleUpdate(JSON.parse(req.body));
+    } catch (err) {
+      console.error('Webhook handle error for user ' + userId + ':', err);
+    }
+  }
+
+  res.sendStatus(200);
 });
 
 // ==================== UTILITIES ====================
@@ -361,7 +396,17 @@ function launchUserBot(user) {
     console.error('Bot error for ' + user.email + ':', err);
   });
 
-  bot.launch();
+  // Set webhook using string concatenation only
+  const webhookUrl = 'https://' + DOMAIN + '/webhook/' + WEBHOOK_SECRET + '/' + user.id;
+
+  bot.telegram.setWebhook(webhookUrl)
+    .then(function() {
+      console.log('Webhook set for @' + user.botUsername + ' -> ' + webhookUrl);
+    })
+    .catch(function(err) {
+      console.error('Failed to set webhook for ' + user.email + ':', err.message);
+    });
+
   activeBots.set(user.id, bot);
 }
 
@@ -957,7 +1002,7 @@ async function executeBroadcast(userId, message) {
   return { sent: sent, failed: failed, total: targets.length };
 }
 
-// Scheduled broadcast processor - using string concatenation only
+// Scheduled broadcast processor
 setInterval(async function() {
   const now = new Date();
   const due = await ScheduledBroadcast.find({
@@ -1165,7 +1210,7 @@ mongoose.connection.once('open', async function() {
   for (let i = 0; i < usersWithBots.length; i++) {
     launchUserBot(usersWithBots[i]);
   }
-  console.log('Launched ' + usersWithBots.length + ' existing Telegram bots');
+  console.log('Launched ' + usersWithBots.length + ' existing Telegram bots with webhooks');
 });
 
 process.on('SIGTERM', function() {
@@ -1178,8 +1223,10 @@ app.use(function(req, res) {
 });
 
 app.listen(PORT, function() {
-  console.log('\nSENDEM SERVER — FINAL MONGODB VERSION');
+  console.log('\nSENDEM SERVER — WEBHOOK VERSION (FINAL)');
   console.log('Server running on http://localhost:' + PORT);
+  console.log('Domain: https://' + DOMAIN);
+  console.log('Webhook path example: /webhook/' + WEBHOOK_SECRET + '/USER_ID');
   console.log('Admin panel: http://localhost:' + PORT + '/admin-limits');
-  console.log('All features preserved, using string concatenation for messages\n');
+  console.log('All original features preserved with webhooks enabled\n');
 });
