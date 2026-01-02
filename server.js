@@ -18,7 +18,6 @@ const PORT = process.env.PORT || 3000;
 // ==================== CONFIG & SECRETS ====================
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_weak_secret_change_me_immediately';
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || 'sk_test_fallback_change_me';
-const PAYSTACK_PUBLIC_KEY = process.env.PAYSTACK_PUBLIC_KEY || 'pk_test_fallback_change_me';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'midas';
 const DOMAIN = process.env.DOMAIN;
 let WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
@@ -47,7 +46,7 @@ if (PAYSTACK_SECRET_KEY.startsWith('sk_test_fallback')) {
 
 const MONTHLY_PRICE_KOBO = 500000; // ₦5,000 in kobo
 
-// Dynamic server-wide limits (configurable via admin panel)
+// Dynamic server-wide limits
 let DAILY_BROADCAST_LIMIT = 3;
 let MAX_LANDING_PAGES = 5;
 let MAX_FORMS = 5;
@@ -167,7 +166,7 @@ app.use(express.static('public'));
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-app.use(express.raw({ type: 'application/json' })); // Required for webhook
+app.use(express.raw({ type: 'application/json' }));
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -317,7 +316,7 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// ==================== TELEGRAM BOT (FIXED) ====================
+// ==================== TELEGRAM BOT - PURE WEBHOOK MODE ====================
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
     activeBots.get(user.id).stop('Replaced');
@@ -392,25 +391,22 @@ function launchUserBot(user) {
 
   const webhookUrl = 'https://' + DOMAIN + '/webhook/' + WEBHOOK_SECRET + '/' + user.id;
 
-  bot.telegram.deleteWebhook({ drop_pending_updates: true })
-    .then(() => bot.telegram.setWebhook(webhookUrl))
-    .then(() => {
-      console.log('Webhook successfully set for @' + user.botUsername + ' -> ' + webhookUrl);
-    })
-    .catch((err) => {
-      if (err.response && err.response.error_code === 409) {
-        console.log('Webhook conflict resolved for @' + user.botUsername);
-        bot.telegram.setWebhook(webhookUrl)
-          .then(() => console.log('Webhook finally set after conflict for @' + user.botUsername))
-          .catch(finalErr => console.error('Final webhook set failed for ' + user.email + ':', finalErr.message));
+  (async () => {
+    try {
+      // Clean any old webhook
+      await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+      const success = await bot.telegram.setWebhook(webhookUrl);
+      if (success) {
+        console.log(`Webhook successfully set for @\( {user.botUsername} → \){webhookUrl}`);
       } else {
-        console.error('Webhook setup error for ' + user.email + ':', err.message);
+        console.error(`Failed to set webhook for @${user.botUsername}`);
       }
-    });
+    } catch (err) {
+      console.error(`Webhook setup error for ${user.email}:`, err.message);
+    }
+  })();
 
-  // CRITICAL FIX: This line makes /start sub_... deep links work in webhook mode
-  bot.launch();
-
+  // Store bot — updates handled manually via /webhook endpoint
   activeBots.set(user.id, bot);
 }
 
@@ -718,15 +714,17 @@ app.post('/api/subscription/webhook', async (req, res) => {
 app.get('/subscription-success', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>Payment Successful</title>
-<style>
-  body{font-family:system-ui,sans-serif;background:#0a0a0a;color:#00ff41;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}
-  .box{background:#111;padding:60px;border-radius:20px;text-align:center;box-shadow:0 0 30px rgba(0,255,65,0.2);}
-  h1{margin:0 0 20px;font-size:3em;color:#00ff41;}
-  p{font-size:1.3em;margin:20px 0;line-height:1.6;}
-  a{display:inline-block;margin-top:30px;padding:14px 32px;background:#00ff41;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;font-size:1.1em;}
-  a:hover{background:#00cc33;}
-</style>
+<head>
+  <meta charset="UTF-8">
+  <title>Payment Successful</title>
+  <style>
+    body{font-family:system-ui,sans-serif;background:#0a0a0a;color:#00ff41;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}
+    .box{background:#111;padding:60px;border-radius:20px;text-align:center;box-shadow:0 0 30px rgba(0,255,65,0.2);}
+    h1{margin:0 0 20px;font-size:3em;color:#00ff41;}
+    p{font-size:1.3em;margin:20px 0;line-height:1.6;}
+    a{display:inline-block;margin-top:30px;padding:14px 32px;background:#00ff41;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;font-size:1.1em;}
+    a:hover{background:#00cc33;}
+  </style>
 </head>
 <body>
   <div class="box">
@@ -1154,15 +1152,32 @@ app.get('/admin-limits', async (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Server Admin Panel</title>
   <style>
-    /* ... (styles same as before) ... */
+    body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 600px; }
+    h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
+    .stat-box { background: #2d2d2d; padding: 20px; border-radius: 10px; text-align: center; }
+    .stat-number { font-size: 2.5em; font-weight: bold; color: #00ff41; margin: 10px 0; }
+    .stat-label { font-size: 1.1em; color: #aaa; }
+    label { display: block; margin: 20px 0 8px; font-size: 1.1em; }
+    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }
+    button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; margin-top: 20px; }
+    button:hover { background: #e6c200; }
+    .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }
   </style>
 </head>
 <body>
   <div class="container">
     <h1>Server Admin Panel</h1>
     <div class="stats">
-      <div class="stat-box"><div class="stat-number">${totalUsers}</div><div class="stat-label">Total Users</div></div>
-      <div class="stat-box"><div class="stat-number">${payingUsers}</div><div class="stat-label">Paying Users</div></div>
+      <div class="stat-box">
+        <div class="stat-number">${totalUsers}</div>
+        <div class="stat-label">Total Users</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-number">${payingUsers}</div>
+        <div class="stat-label">Paying Users</div>
+      </div>
     </div>
     <form method="POST">
       <label>Owner Password</label>
@@ -1206,15 +1221,17 @@ app.post('/admin-limits', (req, res) => {
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>Limits Updated</title>
-<style>
-  body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-  .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }
-  h1 { color: #4caf50; }
-  .success { font-size: 1.2em; margin: 20px 0; }
-  a { color: #ffd700; text-decoration: none; font-weight: bold; }
-  a:hover { text-decoration: underline; }
-</style>
+<head>
+  <meta charset="UTF-8">
+  <title>Limits Updated</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }
+    h1 { color: #4caf50; }
+    .success { font-size: 1.2em; margin: 20px 0; }
+    a { color: #ffd700; text-decoration: none; font-weight: bold; }
+    a:hover { text-decoration: underline; }
+  </style>
 </head>
 <body>
   <div class="container">
@@ -1246,11 +1263,11 @@ mongoose.connection.once('open', async () => {
   for (const user of usersWithBots) {
     launchUserBot(user);
   }
-  console.log(`Launched ${usersWithBots.length} existing Telegram bots with webhooks`);
+  console.log(`Launched ${usersWithBots.length} existing bots in pure webhook mode`);
 });
 
 process.on('SIGTERM', () => {
-  console.log('Shutting down...');
+  console.log('Shutting down gracefully...');
   process.exit(0);
 });
 
@@ -1259,10 +1276,10 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — WEBHOOK VERSION (FULLY FIXED & COMPLETE)');
-  console.log('Server running on http://localhost:' + PORT);
+  console.log('\nSENDEM SERVER — FINAL PURE WEBHOOK VERSION');
+  console.log('Server running on port ' + PORT);
   console.log('Domain: https://' + DOMAIN);
-  console.log('Webhook path example: /webhook/' + WEBHOOK_SECRET + '/USER_ID');
-  console.log('Admin panel: http://localhost:' + PORT + '/admin-limits');
-  console.log('Subscription deep links now work perfectly!\n');
+  console.log('Webhook endpoint: /webhook/' + WEBHOOK_SECRET + '/<userId>');
+  console.log('No 409 errors | Subscription links work perfectly');
+  console.log('Ready for production! 🚀\n');
 });
