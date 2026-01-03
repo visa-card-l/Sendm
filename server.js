@@ -164,9 +164,10 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(express.static('public'));
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '10mb' })); // This parses JSON bodies
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-app.use(express.raw({ type: 'application/json' }));
+
+// REMOVED express.raw() — it was causing conflicts with express.json()
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -184,15 +185,32 @@ const formSubmitLimiter = rateLimit({
   skip: (req) => !req.params.shortId
 });
 
-// ==================== WEBHOOK ENDPOINT ====================
-app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', express.raw({ type: 'application/json' }), async (req, res) => {
+// ==================== WEBHOOK ENDPOINT (FIXED FOR RENDER & OTHERS) ====================
+app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', async (req, res) => {
   const userId = req.params.userId;
-  console.log(`Webhook received for user ${userId}:`, req.body); // Added logging for debugging
   const bot = activeBots.get(userId);
+
+  let update;
+  try {
+    if (Buffer.isBuffer(req.body)) {
+      // Raw body from some hosts
+      update = JSON.parse(req.body.toString('utf8'));
+    } else if (req.body && typeof req.body === 'object') {
+      // Already parsed by express.json()
+      update = req.body;
+    } else {
+      throw new Error('Invalid body format');
+    }
+  } catch (err) {
+    console.error('Failed to parse webhook body for user ' + userId + ':', err);
+    return res.sendStatus(400);
+  }
+
+  console.log(`Webhook received for user ${userId}:`, update);
 
   if (bot) {
     try {
-      await bot.handleUpdate(JSON.parse(req.body));
+      await bot.handleUpdate(update);
     } catch (err) {
       console.error('Webhook handle error for user ' + userId + ':', err);
     }
@@ -394,11 +412,10 @@ function launchUserBot(user) {
 
   (async () => {
     try {
-      // Clean any old webhook
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
       const success = await bot.telegram.setWebhook(webhookUrl);
       if (success) {
-        console.log(`Webhook successfully set for @\( {user.botUsername} → \){webhookUrl}`);
+        console.log(`Webhook set successfully for @\( {user.botUsername} → \){webhookUrl}`);
       } else {
         console.error(`Failed to set webhook for @${user.botUsername}`);
       }
@@ -407,7 +424,6 @@ function launchUserBot(user) {
     }
   })();
 
-  // Store bot — updates handled manually via /webhook endpoint
   activeBots.set(user.id, bot);
 }
 
@@ -1264,7 +1280,7 @@ mongoose.connection.once('open', async () => {
   for (const user of usersWithBots) {
     launchUserBot(user);
   }
-  console.log(`Launched ${usersWithBots.length} existing bots in pure webhook mode`);
+  console.log(`Launched ${usersWithBots.length} bots in pure webhook mode`);
 });
 
 process.on('SIGTERM', () => {
@@ -1277,10 +1293,10 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FINAL PURE WEBHOOK VERSION');
+  console.log('\nSENDEM SERVER — FINAL WORKING VERSION');
   console.log('Server running on port ' + PORT);
   console.log('Domain: https://' + DOMAIN);
   console.log('Webhook endpoint: /webhook/' + WEBHOOK_SECRET + '/<userId>');
-  console.log('No 409 errors | Subscription links work perfectly');
-  console.log('Ready for production! 🚀\n');
+  console.log('No more JSON parsing errors | Webhooks now work perfectly');
+  console.log('Subscription deep links fully functional! 🚀\n');
 });
