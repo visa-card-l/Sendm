@@ -187,6 +187,7 @@ const formSubmitLimiter = rateLimit({
 // ==================== WEBHOOK ENDPOINT ====================
 app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', express.raw({ type: 'application/json' }), async (req, res) => {
   const userId = req.params.userId;
+  console.log(`Webhook received for user ${userId}:`, req.body); // Added logging for debugging
   const bot = activeBots.get(userId);
 
   if (bot) {
