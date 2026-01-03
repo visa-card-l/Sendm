@@ -147,7 +147,7 @@ const BroadcastDaily = mongoose.model('BroadcastDaily', broadcastDailySchema);
 landingPageSchema.index({ userId: 1 });
 formPageSchema.index({ userId: 1 });
 contactSchema.index({ userId: 1 });
-contactSchema.index({ userId: 1, contact: 1 }, { unique: true }); // Enforce uniqueness per user
+contactSchema.index({ userId: 1, contact: 1 }, { unique: true }); // Prevent duplicates per user
 contactSchema.index({ userId: 1, status: 1 });
 scheduledBroadcastSchema.index({ userId: 1 });
 scheduledBroadcastSchema.index({ status: 1 });
@@ -344,14 +344,12 @@ function launchUserBot(user) {
     const payload = ctx.startPayload || '';
     const chatId = ctx.chat.id.toString();
 
-    // Subscription confirmation via deep link
+    // Subscription confirmation
     if (payload.startsWith('sub_') && pendingSubscribers.has(payload)) {
       const sub = pendingSubscribers.get(payload);
       if (sub.userId === user.id) {
-        // Load all contacts for this owner
         const contacts = await Contact.find({ userId: user.id });
 
-        // Priority: match by telegramChatId first, then by contact
         let targetContact = contacts.find(c => c.telegramChatId === chatId);
         if (!targetContact) {
           targetContact = contacts.find(c => c.contact === sub.contact.toLowerCase());
@@ -360,18 +358,16 @@ function launchUserBot(user) {
         let updated = false;
 
         if (targetContact) {
-          // Update existing contact record
           targetContact.name = sub.name.trim();
           targetContact.contact = sub.contact.toLowerCase();
           targetContact.shortId = sub.shortId;
           targetContact.telegramChatId = chatId;
           targetContact.status = 'subscribed';
-          targetContact.subscribedAt = new Date();
+          targetContact.subscribedAt = targetContact.subscribedAt || new Date();
           targetContact.unsubscribedAt = null;
           await targetContact.save();
           updated = true;
         } else {
-          // Create new subscribed contact
           const newContact = new Contact({
             userId: user.id,
             shortId: sub.shortId,
@@ -387,7 +383,6 @@ function launchUserBot(user) {
         }
 
         if (updated) {
-          // Remove any lingering pending duplicates for this contact
           await Contact.deleteMany({
             userId: user.id,
             contact: sub.contact.toLowerCase(),
@@ -397,7 +392,6 @@ function launchUserBot(user) {
 
         pendingSubscribers.delete(payload);
 
-        // Send welcome message
         const form = await FormPage.findOne({ shortId: sub.shortId });
         let welcomeText = '<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you';
 
@@ -933,7 +927,7 @@ app.get('/api/form/:shortId', async (req, res) => {
   });
 });
 
-// ==================== SUBSCRIBE & CONTACTS - PERFECT DUPLICATE HANDLING ====================
+// ==================== SUBSCRIBE & CONTACTS - SMART LOGIC ====================
 app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   const shortId = req.params.shortId;
   const { name, email } = req.body;
@@ -946,13 +940,26 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Bot not connected' });
 
   const contactValue = email.trim().toLowerCase();
-  const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
-  // Find existing contact by email (unique per user)
+  // Find existing contact by email
   let contact = await Contact.findOne({ userId: owner.id, contact: contactValue });
 
+  // Case 1: Already subscribed → just update name/shortId, keep everything else
+  if (contact && contact.status === 'subscribed') {
+    contact.name = name.trim();
+    contact.shortId = shortId;
+    contact.submittedAt = new Date();
+    await contact.save();
+
+    return res.json({
+      success: true,
+      alreadySubscribed: true,
+      message: 'You are already subscribed. Details updated.'
+    });
+  }
+
+  // Case 2: Not subscribed (new, pending, or unsubscribed) → reset to pending and generate deep link
   if (contact) {
-    // Update existing contact - reset to pending and clear old subscription data
     contact.name = name.trim();
     contact.shortId = shortId;
     contact.submittedAt = new Date();
@@ -961,7 +968,6 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
     contact.subscribedAt = null;
     contact.unsubscribedAt = null;
   } else {
-    // Create new pending contact
     contact = new Contact({
       userId: owner.id,
       shortId,
@@ -972,17 +978,9 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
     });
   }
 
-  try {
-    await contact.save();
-  } catch (err) {
-    if (err.code === 11000) {
-      // Duplicate key error - race condition, just fetch again
-      contact = await Contact.findOne({ userId: owner.id, contact: contactValue });
-    } else {
-      throw err;
-    }
-  }
+  await contact.save();
 
+  const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
   pendingSubscribers.set(payload, {
     userId: owner.id,
     shortId,
@@ -1204,9 +1202,57 @@ app.get('/admin-limits', async (req, res) => {
   const payingUsers = await User.countDocuments({ isSubscribed: true, subscriptionEndDate: { $gt: new Date() } });
 
   const html = `<!DOCTYPE html>
-<!-- Full admin panel HTML remains unchanged from your original code -->
-<!-- Omitted here for brevity, but it is exactly the same as in your provided code -->
-`;
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Server Admin Panel</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 600px; }
+    h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
+    .stat-box { background: #2d2d2d; padding: 20px; border-radius: 10px; text-align: center; }
+    .stat-number { font-size: 2.5em; font-weight: bold; color: #00ff41; margin: 10px 0; }
+    .stat-label { font-size: 1.1em; color: #aaa; }
+    label { display: block; margin: 20px 0 8px; font-size: 1.1em; }
+    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }
+    button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; margin-top: 20px; }
+    button:hover { background: #e6c200; }
+    .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Server Admin Panel</h1>
+    <div class="stats">
+      <div class="stat-box">
+        <div class="stat-number">${totalUsers}</div>
+        <div class="stat-label">Total Users</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-number">${payingUsers}</div>
+        <div class="stat-label">Paying Users</div>
+      </div>
+    </div>
+    <form method="POST">
+      <label>Owner Password</label>
+      <input type="password" name="password" required placeholder="Enter admin password">
+      <label>Daily Broadcasts per User (Free)</label>
+      <input type="number" name="daily_broadcast" min="1" value="${DAILY_BROADCAST_LIMIT}" required>
+      <label>Max Landing Pages per User (Free)</label>
+      <input type="number" name="max_pages" min="1" value="${MAX_LANDING_PAGES}" required>
+      <label>Max Forms per User (Free)</label>
+      <input type="number" name="max_forms" min="1" value="${MAX_FORMS}" required>
+      <div class="current">
+        <strong>Current Free Tier Limits:</strong><br>
+        Broadcasts/day: \( {DAILY_BROADCAST_LIMIT} | Pages: \){MAX_LANDING_PAGES} | Forms: ${MAX_FORMS}
+      </div>
+      <button type="submit">Update Limits</button>
+    </form>
+  </div>
+</body>
+</html>`;
   res.send(html);
 });
 
@@ -1231,14 +1277,18 @@ app.post('/admin-limits', (req, res) => {
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="UTF-8"><title>Limits Updated</title><style>
-  body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-  .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }
-  h1 { color: #4caf50; }
-  .success { font-size: 1.2em; margin: 20px 0; }
-  a { color: #ffd700; text-decoration: none; font-weight: bold; }
-  a:hover { text-decoration: underline; }
-</style></head>
+<head>
+  <meta charset="UTF-8">
+  <title>Limits Updated</title>
+  <style>
+    body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
+    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }
+    h1 { color: #4caf50; }
+    .success { font-size: 1.2em; margin: 20px 0; }
+    a { color: #ffd700; text-decoration: none; font-weight: bold; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
 <body>
   <div class="container">
     <h1>Success!</h1>
@@ -1280,9 +1330,9 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FINAL & COMPLETE VERSION');
-  console.log(`Server running on http://localhost:${PORT}`);
-  console.log(`Domain configured: https://${DOMAIN}`);
-  console.log('All features working: MongoDB persistence, webhook mode, Paystack, perfect contact deduplication');
-  console.log('Contact & subscription handling now 100% identical to the proven in-memory version\n');
+  console.log('\nSENDEM SERVER — FINAL VERSION (January 2026)');
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Domain: https://${DOMAIN}`);
+  console.log('Key Feature: Existing subscribed contacts are NOT reset when form is re-submitted.');
+  console.log('Only name/shortId updated — chat ID and subscription status preserved.\n');
 });
