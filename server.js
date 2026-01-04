@@ -147,7 +147,7 @@ const BroadcastDaily = mongoose.model('BroadcastDaily', broadcastDailySchema);
 landingPageSchema.index({ userId: 1 });
 formPageSchema.index({ userId: 1 });
 contactSchema.index({ userId: 1 });
-contactSchema.index({ userId: 1, contact: 1 }, { unique: true }); // No duplicate contacts
+contactSchema.index({ userId: 1, contact: 1 }, { unique: true });
 contactSchema.index({ userId: 1, telegramChatId: 1 });
 contactSchema.index({ userId: 1, status: 1 });
 scheduledBroadcastSchema.index({ userId: 1 });
@@ -361,13 +361,13 @@ function launchUserBot(user) {
           });
         }
 
-        // === FINAL FIX: Remove this chatId from ALL other contacts first ===
+        // === FINAL FIX: Remove chatId from ALL other contacts ===
         await Contact.updateMany(
           { userId: user.id, telegramChatId: chatId },
           { $unset: { telegramChatId: "" } }
         );
 
-        // Now assign to current/latest contact
+        // Now assign to current contact
         contact.telegramChatId = chatId;
         contact.status = 'subscribed';
         contact.subscribedAt = new Date();
@@ -376,7 +376,7 @@ function launchUserBot(user) {
         contact.submittedAt = new Date();
         await contact.save();
 
-        // Clean up pending duplicates
+        // Clean up any pending entries for this contact
         await Contact.deleteMany({ userId: user.id, contact: sub.contact, status: 'pending' });
 
         pendingSubscribers.delete(payload);
@@ -1326,10 +1326,10 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FINAL FIXED VERSION (January 2026)');
+  console.log('\nSENDEM SERVER — FINAL VERSION (January 04, 2026)');
   console.log('→ Duplicate chat IDs completely eliminated');
-  console.log('→ Same Telegram account always updates latest contact only');
-  console.log('→ All original features preserved');
+  console.log('→ Same Telegram account updates only the latest contact');
+  console.log('→ All original routes preserved');
   console.log('Server running on port ' + PORT);
   console.log('Domain: https://' + DOMAIN);
   console.log('Ready for production! 🚀\n');
