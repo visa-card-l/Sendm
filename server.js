@@ -148,6 +148,7 @@ landingPageSchema.index({ userId: 1 });
 formPageSchema.index({ userId: 1 });
 contactSchema.index({ userId: 1 });
 contactSchema.index({ userId: 1, contact: 1 });
+contactSchema.index({ userId: 1, telegramChatId: 1 });
 contactSchema.index({ userId: 1, status: 1 });
 scheduledBroadcastSchema.index({ userId: 1 });
 scheduledBroadcastSchema.index({ status: 1 });
@@ -344,32 +345,29 @@ function launchUserBot(user) {
     const payload = ctx.startPayload || '';
     const chatId = ctx.chat.id.toString();
 
-    // === SUBSCRIPTION CONFIRMATION - EXACT REPLICA OF ORIGINAL ROBUST LOGIC ===
+    // === SUBSCRIPTION CONFIRMATION - FINAL SMART & DUPLICATE-PROOF LOGIC ===
     if (payload.startsWith('sub_') && pendingSubscribers.has(payload)) {
       const sub = pendingSubscribers.get(payload);
       if (sub.userId === user.id) {
-        // Find all contacts with this contact value
-        let list = await Contact.find({ userId: user.id, contact: sub.contact });
+        // 1. Check if this chatId is already used anywhere
+        let targetContact = await Contact.findOne({
+          userId: user.id,
+          telegramChatId: chatId
+        });
 
-        let contactToUpdate = null;
-        let updatedEntry = false;
+        // 2. If not, find contacts with the same contact value
+        const contactsByEmail = await Contact.find({ userId: user.id, contact: sub.contact });
 
-        // Priority 1: already has this chatId
-        contactToUpdate = list.find(c => c.telegramChatId === chatId);
-
-        // Priority 2: from the same form
-        if (!contactToUpdate) {
-          contactToUpdate = list.find(c => c.shortId === sub.shortId);
+        if (!targetContact) {
+          // Prefer an already subscribed one, then same form, then any
+          targetContact = contactsByEmail.find(c => c.status === 'subscribed') ||
+                          contactsByEmail.find(c => c.shortId === sub.shortId) ||
+                          contactsByEmail[0];
         }
 
-        // Priority 3: any existing one
-        if (!contactToUpdate && list.length > 0) {
-          contactToUpdate = list[0];
-        }
-
-        // Create new if none exists
-        if (!contactToUpdate) {
-          contactToUpdate = new Contact({
+        // 3. Create new record only if truly none exists
+        if (!targetContact) {
+          targetContact = new Contact({
             userId: user.id,
             shortId: sub.shortId,
             name: sub.name,
@@ -379,31 +377,31 @@ function launchUserBot(user) {
             submittedAt: new Date(),
             subscribedAt: new Date()
           });
-          updatedEntry = true;
         } else {
-          contactToUpdate.name = sub.name;
-          contactToUpdate.contact = sub.contact;
-          contactToUpdate.shortId = sub.shortId;
-          contactToUpdate.telegramChatId = chatId;
-          contactToUpdate.status = 'subscribed';
-          contactToUpdate.subscribedAt = new Date();
-          updatedEntry = true;
+          // Update the chosen record
+          targetContact.name = sub.name;
+          targetContact.contact = sub.contact;
+          targetContact.shortId = sub.shortId;
+          targetContact.telegramChatId = chatId;
+          targetContact.status = 'subscribed';
+          targetContact.subscribedAt = targetContact.subscribedAt || new Date();
+          targetContact.submittedAt = new Date();
         }
 
-        if (updatedEntry) {
-          await contactToUpdate.save();
+        await targetContact.save();
 
-          // Delete ALL other entries with same contact (prevents duplicates forever)
-          await Contact.deleteMany({
-            userId: user.id,
-            contact: sub.contact,
-            _id: { $ne: contactToUpdate._id }
-          });
-        }
+        // CRITICAL CLEANUP: Remove ALL duplicates
+        await Contact.deleteMany({
+          userId: user.id,
+          $or: [
+            { contact: sub.contact, _id: { $ne: targetContact._id } },
+            { telegramChatId: chatId, _id: { $ne: targetContact._id } }
+          ]
+        });
 
         pendingSubscribers.delete(payload);
 
-        // Custom welcome message
+        // Send welcome message
         const form = await FormPage.findOne({ shortId: sub.shortId });
         let welcomeText = '<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you';
 
@@ -940,7 +938,7 @@ app.get('/api/form/:shortId', async (req, res) => {
   });
 });
 
-// ==================== SUBSCRIBE & CONTACTS ====================
+// ==================== SUBSCRIBE & CONTACTS - FINAL VERSION ====================
 app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   const shortId = req.params.shortId;
   const { name, email } = req.body;
@@ -955,17 +953,36 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   const contactValue = email.trim().toLowerCase();
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
-  // Find or update existing contact
+  // Find existing contact by contact value
   let contact = await Contact.findOne({ userId: owner.id, contact: contactValue });
 
   if (contact) {
+    // If already subscribed → update name/shortId only, KEEP subscribed status
+    if (contact.status === 'subscribed') {
+      contact.name = name.trim();
+      contact.shortId = shortId;
+      contact.submittedAt = new Date();
+      await contact.save();
+
+      // Still create a pending entry so they can re-link if needed (e.g. new device)
+      pendingSubscribers.set(payload, {
+        userId: owner.id,
+        shortId,
+        name: name.trim(),
+        contact: contactValue,
+        createdAt: Date.now()
+      });
+
+      const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
+      return res.json({ success: true, deepLink, alreadySubscribed: true });
+    }
+
+    // If pending → update details
     contact.name = name.trim();
     contact.shortId = shortId;
     contact.submittedAt = new Date();
-    contact.status = 'pending';
-    contact.telegramChatId = null;
-    contact.subscribedAt = null;
   } else {
+    // New contact → create as pending
     contact = new Contact({
       userId: owner.id,
       shortId,
@@ -974,9 +991,10 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
       status: 'pending',
       submittedAt: new Date()
     });
+    await contact.save();
   }
-  await contact.save();
 
+  // Always create a fresh pending payload
   pendingSubscribers.set(payload, {
     userId: owner.id,
     shortId,
@@ -1328,9 +1346,10 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FINAL WITH PERFECT SUBSCRIPTION LOGIC');
-  console.log('Server running on port ' + PORT);
-  console.log('Domain: https://' + DOMAIN);
-  console.log('Duplicate contacts prevented • Resubscriptions handled cleanly • Exact original logic replicated');
-  console.log('Ready for production 🚀\n');
+  console.log('\nSENDEM SERVER — FINAL PRODUCTION READY VERSION');
+  console.log('✓ No duplicate contacts or chat IDs');
+  console.log('✓ Resubscription keeps "subscribed" status');
+  console.log('✓ Smart chatId reuse across devices');
+  console.log('✓ All duplicates automatically cleaned');
+  console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
