@@ -803,9 +803,13 @@ app.post('/api/pages/save', authenticateToken, async (req, res) => {
   if (!title || !config || !Array.isArray(config.blocks)) return res.status(400).json({ error: 'Title and config.blocks required' });
 
   const limits = getUserLimits(req.user);
-  const currentCount = await LandingPage.countDocuments({ userId: req.user.id });
-  if (currentCount >= limits.maxLandingPages && limits.maxLandingPages !== Infinity) {
-    return res.status(403).json({ error: 'Maximum landing pages limit reached.' });
+
+  // Only check limit when creating a NEW page (no shortId provided)
+  if (!shortId) {
+    const currentCount = await LandingPage.countDocuments({ userId: req.user.id });
+    if (currentCount >= limits.maxLandingPages && limits.maxLandingPages !== Infinity) {
+      return res.status(403).json({ error: 'Maximum landing pages limit reached.' });
+    }
   }
 
   const finalShortId = shortId || uuidv4().slice(0, 8);
@@ -878,9 +882,13 @@ app.post('/api/forms/save', authenticateToken, async (req, res) => {
   if (!title || !state) return res.status(400).json({ error: 'Title and state required' });
 
   const limits = getUserLimits(req.user);
-  const currentCount = await FormPage.countDocuments({ userId: req.user.id });
-  if (currentCount >= limits.maxForms && limits.maxForms !== Infinity) {
-    return res.status(403).json({ error: 'Maximum forms limit reached.' });
+
+  // Only check limit when creating a NEW form (no shortId provided)
+  if (!shortId) {
+    const currentCount = await FormPage.countDocuments({ userId: req.user.id });
+    if (currentCount >= limits.maxForms && limits.maxForms !== Infinity) {
+      return res.status(403).json({ error: 'Maximum forms limit reached.' });
+    }
   }
 
   const sanitizedState = JSON.parse(JSON.stringify(state));
@@ -938,7 +946,7 @@ app.get('/api/form/:shortId', async (req, res) => {
   });
 });
 
-// ==================== SUBSCRIBE & CONTACTS - FINAL VERSION ====================
+// ==================== SUBSCRIBE & CONTACTS ====================
 app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   const shortId = req.params.shortId;
   const { name, email } = req.body;
@@ -953,18 +961,15 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   const contactValue = email.trim().toLowerCase();
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
-  // Find existing contact by contact value
   let contact = await Contact.findOne({ userId: owner.id, contact: contactValue });
 
   if (contact) {
-    // If already subscribed → update name/shortId only, KEEP subscribed status
     if (contact.status === 'subscribed') {
       contact.name = name.trim();
       contact.shortId = shortId;
       contact.submittedAt = new Date();
       await contact.save();
 
-      // Still create a pending entry so they can re-link if needed (e.g. new device)
       pendingSubscribers.set(payload, {
         userId: owner.id,
         shortId,
@@ -977,12 +982,10 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
       return res.json({ success: true, deepLink, alreadySubscribed: true });
     }
 
-    // If pending → update details
     contact.name = name.trim();
     contact.shortId = shortId;
     contact.submittedAt = new Date();
   } else {
-    // New contact → create as pending
     contact = new Contact({
       userId: owner.id,
       shortId,
@@ -994,7 +997,6 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
     await contact.save();
   }
 
-  // Always create a fresh pending payload
   pendingSubscribers.set(payload, {
     userId: owner.id,
     shortId,
@@ -1346,10 +1348,9 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FINAL PRODUCTION READY VERSION');
-  console.log('✓ No duplicate contacts or chat IDs');
-  console.log('✓ Resubscription keeps "subscribed" status');
-  console.log('✓ Smart chatId reuse across devices');
-  console.log('✓ All duplicates automatically cleaned');
+  console.log('\nSENDEM SERVER — UPDATED WITH EDIT FIX');
+  console.log('✓ Free users can now EDIT existing landing pages & forms even after hitting limit');
+  console.log('✓ Limit only applies when CREATING new ones');
+  console.log('✓ Broadcast limits unchanged');
   console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
