@@ -46,15 +46,17 @@ if (PAYSTACK_SECRET_KEY.startsWith('sk_test_fallback')) {
 
 const MONTHLY_PRICE_KOBO = 500000; // ₦5,000 in kobo
 
-// Dynamic server-wide limits
-let DAILY_BROADCAST_LIMIT = 3;
-let MAX_LANDING_PAGES = 5;
-let MAX_FORMS = 5;
-
 // Batching config
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 15000;
 const MAX_MSG_LENGTH = 4000;
+
+// ==================== ADMIN SETTINGS CACHE ====================
+let adminSettingsCache = {
+  dailyBroadcastLimit: 3,
+  maxLandingPages: 5,
+  maxForms: 5
+};
 
 // ==================== MONGODB CONNECTION ====================
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/sendm';
@@ -135,6 +137,37 @@ const broadcastDailySchema = new mongoose.Schema({
   count: { type: Number, default: 1 },
 }, { timestamps: true });
 
+// Admin Settings Model (Singleton)
+const adminSettingsSchema = new mongoose.Schema({
+  dailyBroadcastLimit: { type: Number, default: 3, min: 1 },
+  maxLandingPages: { type: Number, default: 5, min: 1 },
+  maxForms: { type: Number, default: 5, min: 1 },
+}, { timestamps: true });
+
+adminSettingsSchema.statics.getSettings = async function() {
+  let settings = await this.findOne();
+  if (!settings) {
+    settings = await this.create({
+      dailyBroadcastLimit: 3,
+      maxLandingPages: 5,
+      maxForms: 5
+    });
+  }
+  return settings;
+};
+
+adminSettingsSchema.statics.updateSettings = async function(updates) {
+  let settings = await this.findOne();
+  if (!settings) {
+    settings = new this();
+  }
+  Object.assign(settings, updates);
+  await settings.save();
+  return settings;
+};
+
+const AdminSettings = mongoose.model('AdminSettings', adminSettingsSchema);
+
 // Models
 const User = mongoose.model('User', userSchema);
 const LandingPage = mongoose.model('LandingPage', landingPageSchema);
@@ -159,6 +192,21 @@ broadcastDailySchema.index({ userId: 1, date: 1 }, { unique: true });
 const activeBots = new Map();
 const resetTokens = new Map();
 const pendingSubscribers = new Map();
+
+// ==================== LOAD ADMIN SETTINGS ON STARTUP ====================
+async function loadAdminSettings() {
+  try {
+    const settings = await AdminSettings.getSettings();
+    adminSettingsCache = {
+      dailyBroadcastLimit: settings.dailyBroadcastLimit,
+      maxLandingPages: settings.maxLandingPages,
+      maxForms: settings.maxForms
+    };
+    console.log('✅ Admin settings loaded from DB:', adminSettingsCache);
+  } catch (err) {
+    console.error('Failed to load admin settings:', err);
+  }
+}
 
 // ==================== MIDDLEWARE ====================
 app.set('view engine', 'ejs');
@@ -299,7 +347,11 @@ function getUserLimits(user) {
   if (hasActiveSubscription(user)) {
     return { dailyBroadcasts: Infinity, maxLandingPages: Infinity, maxForms: Infinity };
   }
-  return { dailyBroadcasts: DAILY_BROADCAST_LIMIT, maxLandingPages: MAX_LANDING_PAGES, maxForms: MAX_FORMS };
+  return {
+    dailyBroadcasts: adminSettingsCache.dailyBroadcastLimit,
+    maxLandingPages: adminSettingsCache.maxLandingPages,
+    maxForms: adminSettingsCache.maxForms
+  };
 }
 
 async function incrementDailyBroadcast(userId) {
@@ -345,27 +397,23 @@ function launchUserBot(user) {
     const payload = ctx.startPayload || '';
     const chatId = ctx.chat.id.toString();
 
-    // === SUBSCRIPTION CONFIRMATION - FINAL SMART & DUPLICATE-PROOF LOGIC ===
+    // === SUBSCRIPTION CONFIRMATION ===
     if (payload.startsWith('sub_') && pendingSubscribers.has(payload)) {
       const sub = pendingSubscribers.get(payload);
       if (sub.userId === user.id) {
-        // 1. Check if this chatId is already used anywhere
         let targetContact = await Contact.findOne({
           userId: user.id,
           telegramChatId: chatId
         });
 
-        // 2. If not, find contacts with the same contact value
         const contactsByEmail = await Contact.find({ userId: user.id, contact: sub.contact });
 
         if (!targetContact) {
-          // Prefer an already subscribed one, then same form, then any
           targetContact = contactsByEmail.find(c => c.status === 'subscribed') ||
                           contactsByEmail.find(c => c.shortId === sub.shortId) ||
                           contactsByEmail[0];
         }
 
-        // 3. Create new record only if truly none exists
         if (!targetContact) {
           targetContact = new Contact({
             userId: user.id,
@@ -378,7 +426,6 @@ function launchUserBot(user) {
             subscribedAt: new Date()
           });
         } else {
-          // Update the chosen record
           targetContact.name = sub.name;
           targetContact.contact = sub.contact;
           targetContact.shortId = sub.shortId;
@@ -390,7 +437,6 @@ function launchUserBot(user) {
 
         await targetContact.save();
 
-        // CRITICAL CLEANUP: Remove ALL duplicates
         await Contact.deleteMany({
           userId: user.id,
           $or: [
@@ -401,7 +447,6 @@ function launchUserBot(user) {
 
         pendingSubscribers.delete(payload);
 
-        // Send welcome message
         const form = await FormPage.findOne({ shortId: sub.shortId });
         let welcomeText = '<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you';
 
@@ -804,7 +849,6 @@ app.post('/api/pages/save', authenticateToken, async (req, res) => {
 
   const limits = getUserLimits(req.user);
 
-  // Only check limit when creating a NEW page (no shortId provided)
   if (!shortId) {
     const currentCount = await LandingPage.countDocuments({ userId: req.user.id });
     if (currentCount >= limits.maxLandingPages && limits.maxLandingPages !== Infinity) {
@@ -883,7 +927,6 @@ app.post('/api/forms/save', authenticateToken, async (req, res) => {
 
   const limits = getUserLimits(req.user);
 
-  // Only check limit when creating a NEW form (no shortId provided)
   if (!shortId) {
     const currentCount = await FormPage.countDocuments({ userId: req.user.id });
     if (currentCount >= limits.maxForms && limits.maxForms !== Infinity) {
@@ -1212,7 +1255,7 @@ app.get('/api/broadcast/scheduled/:broadcastId/details', authenticateToken, asyn
   });
 });
 
-// ==================== ADMIN LIMITS ====================
+// ==================== ADMIN LIMITS PANEL ====================
 app.get('/admin-limits', async (req, res) => {
   const totalUsers = await User.countDocuments({});
   const payingUsers = await User.countDocuments({ isSubscribed: true, subscriptionEndDate: { $gt: new Date() } });
@@ -1255,14 +1298,14 @@ app.get('/admin-limits', async (req, res) => {
       <label>Owner Password</label>
       <input type="password" name="password" required placeholder="Enter admin password">
       <label>Daily Broadcasts per User (Free)</label>
-      <input type="number" name="daily_broadcast" min="1" value="${DAILY_BROADCAST_LIMIT}" required>
+      <input type="number" name="daily_broadcast" min="1" value="${adminSettingsCache.dailyBroadcastLimit}" required>
       <label>Max Landing Pages per User (Free)</label>
-      <input type="number" name="max_pages" min="1" value="${MAX_LANDING_PAGES}" required>
+      <input type="number" name="max_pages" min="1" value="${adminSettingsCache.maxLandingPages}" required>
       <label>Max Forms per User (Free)</label>
-      <input type="number" name="max_forms" min="1" value="${MAX_FORMS}" required>
+      <input type="number" name="max_forms" min="1" value="${adminSettingsCache.maxForms}" required>
       <div class="current">
         <strong>Current Free Tier Limits:</strong><br>
-        Broadcasts/day: \( {DAILY_BROADCAST_LIMIT} | Pages: \){MAX_LANDING_PAGES} | Forms: ${MAX_FORMS}
+        Broadcasts/day: \( {adminSettingsCache.dailyBroadcastLimit} | Pages: \){adminSettingsCache.maxLandingPages} | Forms: ${adminSettingsCache.maxForms}
       </div>
       <button type="submit">Update Limits</button>
     </form>
@@ -1272,7 +1315,7 @@ app.get('/admin-limits', async (req, res) => {
   res.send(html);
 });
 
-app.post('/admin-limits', (req, res) => {
+app.post('/admin-limits', async (req, res) => {
   const { password, daily_broadcast, max_pages, max_forms } = req.body;
 
   if (password !== ADMIN_PASSWORD) {
@@ -1287,11 +1330,22 @@ app.post('/admin-limits', (req, res) => {
     return res.send('<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Invalid Values<br>All limits must be ≥ 1</h1></body></html>');
   }
 
-  DAILY_BROADCAST_LIMIT = newDaily;
-  MAX_LANDING_PAGES = newPages;
-  MAX_FORMS = newForms;
+  try {
+    await AdminSettings.updateSettings({
+      dailyBroadcastLimit: newDaily,
+      maxLandingPages: newPages,
+      maxForms: newForms
+    });
 
-  res.send(`<!DOCTYPE html>
+    adminSettingsCache = {
+      dailyBroadcastLimit: newDaily,
+      maxLandingPages: newPages,
+      maxForms: newForms
+    };
+
+    console.log('Admin limits updated and saved to DB:', adminSettingsCache);
+
+    res.send(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -1308,14 +1362,18 @@ app.post('/admin-limits', (req, res) => {
 <body>
   <div class="container">
     <h1>Success!</h1>
-    <p class="success">Server limits updated successfully:</p>
-    <p><strong>Daily Broadcasts:</strong> ${DAILY_BROADCAST_LIMIT}<br>
-       <strong>Max Pages:</strong> ${MAX_LANDING_PAGES}<br>
-       <strong>Max Forms:</strong> ${MAX_FORMS}</p>
+    <p class="success">Server limits updated and <strong>saved permanently</strong>:</p>
+    <p><strong>Daily Broadcasts:</strong> ${newDaily}<br>
+       <strong>Max Pages:</strong> ${newPages}<br>
+       <strong>Max Forms:</strong> ${newForms}</p>
     <p><a href="/admin-limits">← Back to Control Panel</a></p>
   </div>
 </body>
 </html>`);
+  } catch (err) {
+    console.error('Failed to save admin settings:', err);
+    res.status(500).send('Failed to save settings');
+  }
 });
 
 // ==================== CLEANUP & STARTUP ====================
@@ -1331,6 +1389,7 @@ setInterval(() => {
 }, 60 * 60 * 1000);
 
 mongoose.connection.once('open', async () => {
+  await loadAdminSettings();
   const usersWithBots = await User.find({ telegramBotToken: { $exists: true, $ne: null } });
   for (const user of usersWithBots) {
     launchUserBot(user);
@@ -1348,9 +1407,9 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — UPDATED WITH EDIT FIX');
-  console.log('✓ Free users can now EDIT existing landing pages & forms even after hitting limit');
-  console.log('✓ Limit only applies when CREATING new ones');
-  console.log('✓ Broadcast limits unchanged');
+  console.log('\nSENDEM SERVER — ADMIN SETTINGS NOW PERSISTENT IN MONGODB');
+  console.log('✅ Free tier limits saved permanently');
+  console.log('✅ Changes survive server restarts');
+  console.log('✅ Admin panel shows real values from DB');
   console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
