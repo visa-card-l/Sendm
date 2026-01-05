@@ -9,7 +9,6 @@ const rateLimit = require('express-rate-limit');
 const { Telegraf } = require('telegraf');
 const path = require('path');
 const mongoose = require('mongoose');
-const axios = require('axios');
 const crypto = require('crypto');
 
 const app = express();
@@ -418,12 +417,12 @@ function launchUserBot(user) {
           telegramChatId: chatId
         });
 
-        const contactsByEmail = await Contact.find({ userId: user.id, contact: sub.contact });
+        const contactsByContact = await Contact.find({ userId: user.id, contact: sub.contact });
 
         if (!targetContact) {
-          targetContact = contactsByEmail.find(c => c.status === 'subscribed') ||
-                          contactsByEmail.find(c => c.shortId === sub.shortId) ||
-                          contactsByEmail[0];
+          targetContact = contactsByContact.find(c => c.status === 'subscribed') ||
+                          contactsByContact.find(c => c.shortId === sub.shortId) ||
+                          contactsByContact[0];
         }
 
         if (!targetContact) {
@@ -786,17 +785,25 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
   const token = botToken.trim();
 
-  // Check if token is already used by another account
   const inUse = await isBotTokenInUse(token, req.user.id);
   if (inUse) {
     return res.status(409).json({ error: 'Bot already in use by another account' });
   }
 
   try {
-    const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe');
-    if (!response.data.ok) return res.status(400).json({ error: 'Invalid bot token' });
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
 
-    const botUsername = response.data.result.username.replace(/^@/, '');
+    if (!response.ok) {
+      let errorMsg = 'Invalid bot token';
+      try {
+        const errorData = await response.json();
+        errorMsg = errorData.description || errorMsg;
+      } catch (_) {}
+      return res.status(400).json({ error: errorMsg });
+    }
+
+    const data = await response.json();
+    const botUsername = data.result.username.replace(/^@/, '');
 
     req.user.telegramBotToken = token;
     req.user.botUsername = botUsername;
@@ -815,7 +822,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
     });
   } catch (err) {
     console.error('Telegram connect error:', err.message);
-    res.status(500).json({ error: 'Failed to validate bot token' });
+    res.status(500).json({ error: 'Failed to validate bot token (network issue)' });
   }
 });
 
@@ -825,17 +832,25 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
   const token = newBotToken.trim();
 
-  // Allow current user to re-use their own token, but block others
   const inUse = await isBotTokenInUse(token, req.user.id);
   if (inUse) {
     return res.status(409).json({ error: 'Bot already in use by another account' });
   }
 
   try {
-    const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe');
-    if (!response.data.ok) return res.status(400).json({ error: 'Invalid bot token' });
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
 
-    const botUsername = response.data.result.username.replace(/^@/, '');
+    if (!response.ok) {
+      let errorMsg = 'Invalid bot token';
+      try {
+        const errorData = await response.json();
+        errorMsg = errorData.description || errorMsg;
+      } catch (_) {}
+      return res.status(400).json({ error: errorMsg });
+    }
+
+    const data = await response.json();
+    const botUsername = data.result.username.replace(/^@/, '');
 
     req.user.telegramBotToken = token;
     req.user.botUsername = botUsername;
@@ -853,7 +868,8 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
       startLink
     });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to validate new token' });
+    console.error('Telegram change token error:', err.message);
+    res.status(500).json({ error: 'Failed to validate new token (network issue)' });
   }
 });
 
@@ -969,32 +985,34 @@ app.post('/api/subscription/initiate', authenticateToken, async (req, res) => {
   }
 
   try {
-    const response = await axios.post(
-      'https://api.paystack.co/transaction/initialize',
-      {
+    const response = await fetch('https://api.paystack.co/transaction/initialize', {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + PAYSTACK_SECRET_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
         email: req.user.email,
         amount: MONTHLY_PRICE_KOBO,
         currency: 'NGN',
         callback_url: req.protocol + '://' + req.get('host') + '/subscription-success',
         metadata: { userId: req.user.id, plan: 'premium-monthly' }
-      },
-      {
-        headers: {
-          Authorization: 'Bearer ' + PAYSTACK_SECRET_KEY,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
+      })
+    });
 
-    const authorization_url = response.data.data.authorization_url;
-    const reference = response.data.data.reference;
+    if (!response.ok) throw new Error('Paystack initialization failed');
+
+    const paystackData = await response.json();
+
+    const authorization_url = paystackData.data.authorization_url;
+    const reference = paystackData.data.reference;
 
     req.user.pendingPaymentReference = reference;
     await req.user.save();
 
     res.json({ success: true, authorizationUrl: authorization_url, reference });
   } catch (error) {
-    console.error('Paystack init error:', error.response ? error.response.data : error.message);
+    console.error('Paystack init error:', error.message);
     res.status(500).json({ error: 'Failed to initialize payment' });
   }
 });
@@ -1177,7 +1195,6 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
 
   const contactValue = email.trim();
 
-  // Validate: email OR international phone number (E.164 format)
   const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
   const phoneRegex = /^\+[1-9]\d{1,14}$/;
 
@@ -1519,9 +1536,9 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FULLY CACHED WITH STRING CONCATENATION URLs');
-  console.log('✅ All URLs now use classic string concatenation (+)');
-  console.log('✅ High-performance per-user TTL caching');
-  console.log('✅ Instant cache invalidation');
+  console.log('\nSENDEM SERVER — FINAL VERSION WITH ALL FEATURES');
+  console.log('✅ Bot token uniqueness enforced');
+  console.log('✅ Contact validation: only email or international phone');
+  console.log('✅ Using native fetch() for Telegram validation');
   console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
