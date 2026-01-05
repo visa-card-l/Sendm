@@ -266,79 +266,16 @@ const activeBots = new Map();
 const resetTokens = new Map();
 const pendingSubscribers = new Map();
 
-// NEW: Track used bot tokens to prevent reuse across accounts
-const usedBotTokens = new Map(); // token → userId
-
-// ==================== LOAD ADMIN SETTINGS ON STARTUP ====================
-async function loadAdminSettings() {
-  try {
-    const settings = await AdminSettings.getSettings();
-    adminSettingsCache = {
-      dailyBroadcastLimit: settings.dailyBroadcastLimit,
-      maxLandingPages: settings.maxLandingPages,
-      maxForms: settings.maxForms
-    };
-    console.log('✅ Admin settings loaded from DB:', adminSettingsCache);
-  } catch (err) {
-    console.error('Failed to load admin settings:', err);
+// ==================== UTILITIES ====================
+async function isBotTokenInUse(token, excludeUserId = null) {
+  const query = { telegramBotToken: token.trim() };
+  if (excludeUserId) {
+    query.id = { $ne: excludeUserId };
   }
+  const existingUser = await User.findOne(query);
+  return !!existingUser;
 }
 
-// ==================== MIDDLEWARE ====================
-app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views'));
-app.use(express.static('public'));
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many attempts' }
-});
-
-const formSubmitLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many submissions to this form. Please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => req.ip + '::' + req.params.shortId,
-  skip: (req) => !req.params.shortId
-});
-
-// ==================== WEBHOOK ENDPOINT ====================
-app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', async (req, res) => {
-  const userId = req.params.userId;
-  const bot = activeBots.get(userId);
-
-  let update;
-  try {
-    if (Buffer.isBuffer(req.body)) {
-      update = JSON.parse(req.body.toString('utf8'));
-    } else if (req.body && typeof req.body === 'object') {
-      update = req.body;
-    } else {
-      throw new Error('Invalid body format');
-    }
-  } catch (err) {
-    console.error('Failed to parse webhook body for user ' + userId + ':', err);
-    return res.sendStatus(400);
-  }
-
-  if (bot) {
-    try {
-      await bot.handleUpdate(update);
-    } catch (err) {
-      console.error('Webhook handle error for user ' + userId + ':', err);
-    }
-  }
-
-  res.sendStatus(200);
-});
-
-// ==================== UTILITIES ====================
 function sanitizeTelegramHtml(unsafe) {
   if (!unsafe || typeof unsafe !== 'string') return '';
   const allowedTags = new Set(['b','strong','i','em','u','ins','s','strike','del','span','tg-spoiler','a','code','pre','tg-emoji']);
@@ -461,19 +398,11 @@ const authenticateToken = async (req, res, next) => {
 // ==================== TELEGRAM BOT - PURE WEBHOOK MODE ====================
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
-    const oldBot = activeBots.get(user.id);
-    // Remove old token from tracking if it exists
-    if (user.telegramBotToken) {
-      usedBotTokens.delete(user.telegramBotToken);
-    }
-    oldBot.stop('Replaced');
+    activeBots.get(user.id).stop('Replaced');
     activeBots.delete(user.id);
   }
 
   if (!user.telegramBotToken) return;
-
-  // Register the new token
-  usedBotTokens.set(user.telegramBotToken, user.id);
 
   const bot = new Telegraf(user.telegramBotToken);
 
@@ -576,13 +505,80 @@ function launchUserBot(user) {
       }
     } catch (err) {
       console.error('Webhook setup error for ' + user.email + ':', err.message);
-      // Cleanup on failure
-      usedBotTokens.delete(user.telegramBotToken);
     }
   })();
 
   activeBots.set(user.id, bot);
 }
+
+// ==================== LOAD ADMIN SETTINGS ON STARTUP ====================
+async function loadAdminSettings() {
+  try {
+    const settings = await AdminSettings.getSettings();
+    adminSettingsCache = {
+      dailyBroadcastLimit: settings.dailyBroadcastLimit,
+      maxLandingPages: settings.maxLandingPages,
+      maxForms: settings.maxForms
+    };
+    console.log('✅ Admin settings loaded from DB:', adminSettingsCache);
+  } catch (err) {
+    console.error('Failed to load admin settings:', err);
+  }
+}
+
+// ==================== MIDDLEWARE ====================
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.static('public'));
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many attempts' }
+});
+
+const formSubmitLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many submissions to this form. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip + '::' + req.params.shortId,
+  skip: (req) => !req.params.shortId
+});
+
+// ==================== WEBHOOK ENDPOINT ====================
+app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', async (req, res) => {
+  const userId = req.params.userId;
+  const bot = activeBots.get(userId);
+
+  let update;
+  try {
+    if (Buffer.isBuffer(req.body)) {
+      update = JSON.parse(req.body.toString('utf8'));
+    } else if (req.body && typeof req.body === 'object') {
+      update = req.body;
+    } else {
+      throw new Error('Invalid body format');
+    }
+  } catch (err) {
+    console.error('Failed to parse webhook body for user ' + userId + ':', err);
+    return res.sendStatus(400);
+  }
+
+  if (bot) {
+    try {
+      await bot.handleUpdate(update);
+    } catch (err) {
+      console.error('Webhook handle error for user ' + userId + ':', err);
+    }
+  }
+
+  res.sendStatus(200);
+});
 
 // ==================== CACHED HIGH-READ ENDPOINTS ====================
 
@@ -790,16 +786,17 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
   const token = botToken.trim();
 
+  // Check if token is already used by another account
+  const inUse = await isBotTokenInUse(token, req.user.id);
+  if (inUse) {
+    return res.status(409).json({ error: 'Bot already in use by another account' });
+  }
+
   try {
     const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe');
     if (!response.data.ok) return res.status(400).json({ error: 'Invalid bot token' });
 
     const botUsername = response.data.result.username.replace(/^@/, '');
-
-    // NEW: Prevent reuse of the same bot token by another account
-    if (usedBotTokens.has(token) && usedBotTokens.get(token) !== req.user.id) {
-      return res.status(400).json({ error: 'Bot already in use' });
-    }
 
     req.user.telegramBotToken = token;
     req.user.botUsername = botUsername;
@@ -828,16 +825,17 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
   const token = newBotToken.trim();
 
+  // Allow current user to re-use their own token, but block others
+  const inUse = await isBotTokenInUse(token, req.user.id);
+  if (inUse) {
+    return res.status(409).json({ error: 'Bot already in use by another account' });
+  }
+
   try {
     const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe');
     if (!response.data.ok) return res.status(400).json({ error: 'Invalid bot token' });
 
     const botUsername = response.data.result.username.replace(/^@/, '');
-
-    // NEW: Prevent reuse of the same bot token by another account
-    if (usedBotTokens.has(token) && usedBotTokens.get(token) !== req.user.id) {
-      return res.status(400).json({ error: 'Bot already in use' });
-    }
 
     req.user.telegramBotToken = token;
     req.user.botUsername = botUsername;
@@ -863,11 +861,6 @@ app.post('/api/auth/disconnect-telegram', authenticateToken, async (req, res) =>
   if (activeBots.has(req.user.id)) {
     activeBots.get(req.user.id).stop('Disconnected');
     activeBots.delete(req.user.id);
-  }
-
-  // NEW: Clean up token tracking
-  if (req.user.telegramBotToken) {
-    usedBotTokens.delete(req.user.telegramBotToken);
   }
 
   req.user.telegramBotToken = null;
@@ -1182,15 +1175,15 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
   if (!email || !email.trim()) return res.status(400).json({ error: 'Contact (email or phone) is required' });
 
-  const contactInput = email.trim();
+  const contactValue = email.trim();
 
-  // NEW: Validate that contact is either a valid email OR a valid international phone number
+  // Validate: email OR international phone number (E.164 format)
   const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-  const phoneRegex = /^\+[1-9]\d{1,14}$/; // E.164 format
+  const phoneRegex = /^\+[1-9]\d{1,14}$/;
 
-  if (!emailRegex.test(contactInput) && !phoneRegex.test(contactInput)) {
-    return res.status(400).json({ 
-      error: 'Invalid contact: must be a valid email or phone number in international format (e.g. +2348012345678)' 
+  if (!emailRegex.test(contactValue) && !phoneRegex.test(contactValue)) {
+    return res.status(400).json({
+      error: 'Invalid contact: must be a valid email address or phone number (e.g. +2348012345678)'
     });
   }
 
@@ -1198,12 +1191,15 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   if (!form) return res.status(404).json({ error: 'Form not found' });
 
   const owner = await User.findOne({ id: form.userId });
-  if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Bot not connected' });
+  if (!owner || !owner.telegramBotToken || !owner.botUsername) {
+    return res.status(400).json({ error: 'Bot not connected' });
+  }
 
-  const contactValue = contactInput.toLowerCase(); // store emails in lowercase
+  const normalizedContact = emailRegex.test(contactValue) ? contactValue.toLowerCase() : contactValue;
+
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
-  let contact = await Contact.findOne({ userId: owner.id, contact: contactValue });
+  let contact = await Contact.findOne({ userId: owner.id, contact: normalizedContact });
 
   if (contact) {
     if (contact.status === 'subscribed') {
@@ -1216,7 +1212,7 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
         userId: owner.id,
         shortId,
         name: name.trim(),
-        contact: contactValue,
+        contact: normalizedContact,
         createdAt: Date.now()
       });
 
@@ -1232,7 +1228,7 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
       userId: owner.id,
       shortId,
       name: name.trim(),
-      contact: contactValue,
+      contact: normalizedContact,
       status: 'pending',
       submittedAt: new Date()
     });
@@ -1243,7 +1239,7 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
     userId: owner.id,
     shortId,
     name: name.trim(),
-    contact: contactValue,
+    contact: normalizedContact,
     createdAt: Date.now()
   });
 
