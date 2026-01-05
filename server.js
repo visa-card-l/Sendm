@@ -51,6 +51,84 @@ const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 15000;
 const MAX_MSG_LENGTH = 4000;
 
+// ==================== PER-USER & PUBLIC CACHE WITH TTL ====================
+const userCache = new Map();     // userId → cache bucket
+const publicCache = new Map();   // key like 'landing:abc123' → { data, timestamp }
+
+// TTL settings (in milliseconds)
+const TTL = {
+  pages: 5 * 60 * 1000,        // 5 minutes
+  forms: 5 * 60 * 1000,        // 5 minutes
+  contacts: 2 * 60 * 1000,     // 2 minutes
+  public: 10 * 60 * 1000       // 10 minutes for public pages/forms
+};
+
+// Get or create per-user cache bucket
+function getUserCache(userId) {
+  let bucket = userCache.get(userId);
+  if (!bucket) {
+    bucket = {
+      pages: null,
+      forms: null,
+      contacts: null,
+      pagesTs: 0,
+      formsTs: 0,
+      contactsTs: 0,
+      lastAccess: Date.now()
+    };
+    userCache.set(userId, bucket);
+  } else {
+    bucket.lastAccess = Date.now();
+  }
+  return bucket;
+}
+
+// Invalidate specific user cache
+function invalidateUserCache(userId, type = 'all') {
+  const bucket = userCache.get(userId);
+  if (!bucket) return;
+
+  if (type === 'pages' || type === 'all') {
+    bucket.pages = null;
+    bucket.pagesTs = 0;
+  }
+  if (type === 'forms' || type === 'all') {
+    bucket.forms = null;
+    bucket.formsTs = 0;
+  }
+  if (type === 'contacts' || type === 'all') {
+    bucket.contacts = null;
+    bucket.contactsTs = 0;
+  }
+  bucket.lastAccess = Date.now();
+}
+
+// Invalidate public cache entry
+function invalidatePublicCache(key) {
+  publicCache.delete(key);
+}
+
+// Auto cleanup every 10 minutes
+setInterval(() => {
+  const now = Date.now();
+  const INACTIVE_THRESHOLD = 30 * 60 * 1000; // 30 min
+
+  // Clean public cache
+  for (const [key, val] of publicCache.entries()) {
+    if (now - val.timestamp > TTL.public) {
+      publicCache.delete(key);
+    }
+  }
+
+  // Clean inactive users
+  for (const [userId, bucket] of userCache.entries()) {
+    if (now - bucket.lastAccess > INACTIVE_THRESHOLD) {
+      userCache.delete(userId);
+      console.log(`🧹 Cleaned cache for inactive user: ${userId}`);
+    }
+  }
+}, 10 * 60 * 1000);
+
 // ==================== ADMIN SETTINGS CACHE ====================
 let adminSettingsCache = {
   dailyBroadcastLimit: 3,
@@ -137,7 +215,6 @@ const broadcastDailySchema = new mongoose.Schema({
   count: { type: Number, default: 1 },
 }, { timestamps: true });
 
-// Admin Settings Model (Singleton)
 const adminSettingsSchema = new mongoose.Schema({
   dailyBroadcastLimit: { type: Number, default: 3, min: 1 },
   maxLandingPages: { type: Number, default: 5, min: 1 },
@@ -158,17 +235,13 @@ adminSettingsSchema.statics.getSettings = async function() {
 
 adminSettingsSchema.statics.updateSettings = async function(updates) {
   let settings = await this.findOne();
-  if (!settings) {
-    settings = new this();
-  }
+  if (!settings) settings = new this();
   Object.assign(settings, updates);
   await settings.save();
   return settings;
 };
 
 const AdminSettings = mongoose.model('AdminSettings', adminSettingsSchema);
-
-// Models
 const User = mongoose.model('User', userSchema);
 const LandingPage = mongoose.model('LandingPage', landingPageSchema);
 const FormPage = mongoose.model('FormPage', formPageSchema);
@@ -397,7 +470,6 @@ function launchUserBot(user) {
     const payload = ctx.startPayload || '';
     const chatId = ctx.chat.id.toString();
 
-    // === SUBSCRIPTION CONFIRMATION ===
     if (payload.startsWith('sub_') && pendingSubscribers.has(payload)) {
       const sub = pendingSubscribers.get(payload);
       if (sub.userId === user.id) {
@@ -461,7 +533,6 @@ function launchUserBot(user) {
       }
     }
 
-    // === 2FA CONNECTION ===
     if (payload === user.id) {
       user.telegramChatId = chatId;
       user.isTelegramConnected = true;
@@ -470,7 +541,6 @@ function launchUserBot(user) {
       return;
     }
 
-    // === DEFAULT ===
     await ctx.replyWithHTML('<b>Welcome!</b>\n\nSubscribe from the page to get updates.');
   });
 
@@ -489,7 +559,7 @@ function launchUserBot(user) {
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
       const success = await bot.telegram.setWebhook(webhookUrl);
       if (success) {
-        console.log(`Webhook set successfully for @\( {user.botUsername} → \){webhookUrl}`);
+        console.log(`Webhook set successfully for @\( {user.botUsername || 'unknown'} → \){webhookUrl}`);
       } else {
         console.error(`Failed to set webhook for @${user.botUsername}`);
       }
@@ -500,6 +570,154 @@ function launchUserBot(user) {
 
   activeBots.set(user.id, bot);
 }
+
+// ==================== CACHED HIGH-READ ENDPOINTS ====================
+
+// Public Landing Page
+app.get('/p/:shortId', async (req, res) => {
+  const key = `landing:${req.params.shortId}`;
+  const cached = publicCache.get(key);
+
+  if (cached && Date.now() - cached.timestamp < TTL.public) {
+    return res.render('landing', cached.data);
+  }
+
+  const page = await LandingPage.findOne({ shortId: req.params.shortId });
+  if (!page) return res.status(404).render('404');
+
+  const data = { title: page.title, blocks: page.config.blocks };
+  publicCache.set(key, { data, timestamp: Date.now() });
+  res.render('landing', data);
+});
+
+// Public Form Page
+app.get('/f/:shortId', async (req, res) => {
+  const key = `form:${req.params.shortId}`;
+  const cached = publicCache.get(key);
+
+  if (cached && Date.now() - cached.timestamp < TTL.public) {
+    return res.render('form', cached.data);
+  }
+
+  const form = await FormPage.findOne({ shortId: req.params.shortId });
+  if (!form) return res.status(404).render('404');
+
+  const data = { title: form.title, state: form.state };
+  publicCache.set(key, { data, timestamp: Date.now() });
+  res.render('form', data);
+});
+
+// User's Pages List
+app.get('/api/pages', authenticateToken, async (req, res) => {
+  const bucket = getUserCache(req.user.id);
+  const now = Date.now();
+
+  if (bucket.pages && now - bucket.pagesTs < TTL.pages) {
+    return res.json({ pages: bucket.pages });
+  }
+
+  const pages = await LandingPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
+  const host = req.get('host');
+  const protocol = req.protocol;
+  const formatted = pages.map(p => ({
+    shortId: p.shortId,
+    title: p.title,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+    url: `\( {protocol}:// \){host}/p/${p.shortId}`
+  }));
+
+  bucket.pages = formatted;
+  bucket.pagesTs = now;
+  res.json({ pages: formatted });
+});
+
+// User's Forms List
+app.get('/api/forms', authenticateToken, async (req, res) => {
+  const bucket = getUserCache(req.user.id);
+  const now = Date.now();
+
+  if (bucket.forms && now - bucket.formsTs < TTL.forms) {
+    return res.json({ forms: bucket.forms });
+  }
+
+  const forms = await FormPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
+  const host = req.get('host');
+  const protocol = req.protocol;
+  const formatted = forms.map(f => ({
+    shortId: f.shortId,
+    title: f.title,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+    url: `\( {protocol}:// \){host}/f/${f.shortId}`
+  }));
+
+  bucket.forms = formatted;
+  bucket.formsTs = now;
+  res.json({ forms: formatted });
+});
+
+// User's Contacts List
+app.get('/api/contacts', authenticateToken, async (req, res) => {
+  const bucket = getUserCache(req.user.id);
+  const now = Date.now();
+
+  if (bucket.contacts && now - bucket.contactsTs < TTL.contacts) {
+    return res.json({ success: true, contacts: bucket.contacts });
+  }
+
+  const contacts = await Contact.find({ userId: req.user.id }).sort({ submittedAt: -1 });
+  const formatted = contacts.map(c => ({
+    name: c.name,
+    contact: c.contact,
+    status: c.status,
+    telegramChatId: c.telegramChatId || null,
+    pageId: c.shortId,
+    submittedAt: new Date(c.submittedAt).toLocaleString(),
+    subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
+  }));
+
+  bucket.contacts = formatted;
+  bucket.contactsTs = now;
+  res.json({ success: true, contacts: formatted });
+});
+
+// Single Page API (public)
+app.get('/api/page/:shortId', async (req, res) => {
+  const key = `apiPage:${req.params.shortId}`;
+  const cached = publicCache.get(key);
+  if (cached && Date.now() - cached.timestamp < TTL.public) {
+    return res.json(cached.data);
+  }
+
+  const page = await LandingPage.findOne({ shortId: req.params.shortId });
+  if (!page) return res.status(404).json({ error: 'Page not found' });
+
+  const data = { shortId: page.shortId, title: page.title, config: page.config };
+  publicCache.set(key, { data, timestamp: Date.now() });
+  res.json(data);
+});
+
+// Single Form API (public)
+app.get('/api/form/:shortId', async (req, res) => {
+  const key = `apiForm:${req.params.shortId}`;
+  const cached = publicCache.get(key);
+  if (cached && Date.now() - cached.timestamp < TTL.public) {
+    return res.json(cached.data);
+  }
+
+  const form = await FormPage.findOne({ shortId: req.params.shortId });
+  if (!form) return res.status(404).json({ error: 'Form not found' });
+
+  const data = {
+    shortId: form.shortId,
+    title: form.title,
+    state: form.state,
+    welcomeMessage: form.welcomeMessage
+  };
+  publicCache.set(key, { data, timestamp: Date.now() });
+  res.json(data);
+});
 
 // ==================== AUTH ROUTES ====================
 app.post('/api/auth/register', authLimiter, async (req, res) => {
@@ -819,7 +1037,7 @@ app.get('/subscription-success', (req, res) => {
 </head>
 <body>
   <div class="box">
-    <h1>✔ Payment Successful!</h1>
+    <h1>✓ Payment Successful!</h1>
     <p>Your subscription is now <strong>active</strong>.</p>
     <p>You have unlimited broadcasts, landing pages, and forms.</p>
     <p><a href="/">← Return to Dashboard</a></p>
@@ -828,21 +1046,7 @@ app.get('/subscription-success', (req, res) => {
 </html>`);
 });
 
-// ==================== LANDING PAGES ====================
-app.get('/api/pages', authenticateToken, async (req, res) => {
-  const pages = await LandingPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
-  const host = req.get('host');
-  const protocol = req.protocol;
-  const formatted = pages.map(p => ({
-    shortId: p.shortId,
-    title: p.title,
-    createdAt: p.createdAt,
-    updatedAt: p.updatedAt,
-    url: protocol + '://' + host + '/p/' + p.shortId
-  }));
-  res.json({ pages: formatted });
-});
-
+// ==================== LANDING PAGES WRITE ROUTES WITH INVALIDATION ====================
 app.post('/api/pages/save', authenticateToken, async (req, res) => {
   const { shortId, title, config } = req.body;
   if (!title || !config || !Array.isArray(config.blocks)) return res.status(400).json({ error: 'Title and config.blocks required' });
@@ -882,6 +1086,10 @@ app.post('/api/pages/save', authenticateToken, async (req, res) => {
     { upsert: true }
   );
 
+  invalidateUserCache(req.user.id, 'pages');
+  invalidatePublicCache(`landing:${finalShortId}`);
+  invalidatePublicCache(`apiPage:${finalShortId}`);
+
   const url = req.protocol + '://' + req.get('host') + '/p/' + finalShortId;
   res.json({ success: true, shortId: finalShortId, url });
 });
@@ -891,36 +1099,15 @@ app.post('/api/pages/delete', authenticateToken, async (req, res) => {
   const page = await LandingPage.findOne({ shortId, userId: req.user.id });
   if (!page) return res.status(404).json({ error: 'Page not found' });
   await LandingPage.deleteOne({ shortId });
+
+  invalidateUserCache(req.user.id, 'pages');
+  invalidatePublicCache(`landing:${shortId}`);
+  invalidatePublicCache(`apiPage:${shortId}`);
+
   res.json({ success: true });
 });
 
-app.get('/p/:shortId', async (req, res) => {
-  const page = await LandingPage.findOne({ shortId: req.params.shortId });
-  if (!page) return res.status(404).render('404');
-  res.render('landing', { title: page.title, blocks: page.config.blocks });
-});
-
-app.get('/api/page/:shortId', async (req, res) => {
-  const page = await LandingPage.findOne({ shortId: req.params.shortId });
-  if (!page) return res.status(404).json({ error: 'Page not found' });
-  res.json({ shortId: page.shortId, title: page.title, config: page.config });
-});
-
-// ==================== FORMS ====================
-app.get('/api/forms', authenticateToken, async (req, res) => {
-  const forms = await FormPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
-  const host = req.get('host');
-  const protocol = req.protocol;
-  const formatted = forms.map(f => ({
-    shortId: f.shortId,
-    title: f.title,
-    createdAt: f.createdAt,
-    updatedAt: f.updatedAt,
-    url: protocol + '://' + host + '/f/' + f.shortId
-  }));
-  res.json({ forms: formatted });
-});
-
+// ==================== FORMS WRITE ROUTES WITH INVALIDATION ====================
 app.post('/api/forms/save', authenticateToken, async (req, res) => {
   const { shortId, title, state, welcomeMessage } = req.body;
   if (!title || !state) return res.status(400).json({ error: 'Title and state required' });
@@ -959,6 +1146,10 @@ app.post('/api/forms/save', authenticateToken, async (req, res) => {
     { upsert: true }
   );
 
+  invalidateUserCache(req.user.id, 'forms');
+  invalidatePublicCache(`form:${finalShortId}`);
+  invalidatePublicCache(`apiForm:${finalShortId}`);
+
   const url = req.protocol + '://' + req.get('host') + '/f/' + finalShortId;
   res.json({ success: true, shortId: finalShortId, url });
 });
@@ -969,24 +1160,12 @@ app.post('/api/forms/delete', authenticateToken, async (req, res) => {
   if (!form) return res.status(404).json({ error: 'Form not found' });
   await FormPage.deleteOne({ shortId });
   await Contact.deleteMany({ shortId, userId: req.user.id });
+
+  invalidateUserCache(req.user.id, 'forms');
+  invalidatePublicCache(`form:${shortId}`);
+  invalidatePublicCache(`apiForm:${shortId}`);
+
   res.json({ success: true });
-});
-
-app.get('/f/:shortId', async (req, res) => {
-  const form = await FormPage.findOne({ shortId: req.params.shortId });
-  if (!form) return res.status(404).render('404');
-  res.render('form', { title: form.title, state: form.state });
-});
-
-app.get('/api/form/:shortId', async (req, res) => {
-  const form = await FormPage.findOne({ shortId: req.params.shortId });
-  if (!form) return res.status(404).json({ error: 'Form not found' });
-  res.json({
-    shortId: form.shortId,
-    title: form.title,
-    state: form.state,
-    welcomeMessage: form.welcomeMessage
-  });
 });
 
 // ==================== SUBSCRIBE & CONTACTS ====================
@@ -1050,20 +1229,9 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
 
   const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
   res.json({ success: true, deepLink });
-});
 
-app.get('/api/contacts', authenticateToken, async (req, res) => {
-  const contacts = await Contact.find({ userId: req.user.id }).sort({ submittedAt: -1 });
-  const formatted = contacts.map(c => ({
-    name: c.name,
-    contact: c.contact,
-    status: c.status,
-    telegramChatId: c.telegramChatId || null,
-    pageId: c.shortId,
-    submittedAt: new Date(c.submittedAt).toLocaleString(),
-    subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
-  }));
-  res.json({ success: true, contacts: formatted });
+  // Invalidate owner's contacts cache
+  invalidateUserCache(owner.id, 'contacts');
 });
 
 app.post('/api/contacts/delete', authenticateToken, async (req, res) => {
@@ -1074,6 +1242,8 @@ app.post('/api/contacts/delete', authenticateToken, async (req, res) => {
     userId: req.user.id,
     contact: { $in: contacts }
   });
+
+  invalidateUserCache(req.user.id, 'contacts');
 
   res.json({ success: true, deletedCount: result.deletedCount });
 });
@@ -1115,6 +1285,7 @@ async function executeBroadcast(userId, message) {
           target.unsubscribedAt = new Date();
           target.telegramChatId = null;
           await target.save();
+          invalidateUserCache(userId, 'contacts');
         }
       }
     }
@@ -1170,6 +1341,7 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   }
 
   const result = await executeBroadcast(req.user.id, message.trim());
+  invalidateUserCache(req.user.id, 'contacts'); // Contacts may have changed (blocked users)
   res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total });
 });
 
@@ -1407,9 +1579,10 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — ADMIN SETTINGS NOW PERSISTENT IN MONGODB');
-  console.log('✅ Free tier limits saved permanently');
-  console.log('✅ Changes survive server restarts');
-  console.log('✅ Admin panel shows real values from DB');
-  console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
+  console.log('\n🚀 SENDEM SERVER — FULLY CACHED WITH PER-USER TTL');
+  console.log('✅ High-read endpoints cached');
+  console.log('✅ Instant invalidation on writes');
+  console.log('✅ No stale data ever');
+  console.log('✅ Auto memory cleanup');
+  console.log(`Server running on port \( {PORT} | Domain: https:// \){DOMAIN}\n`);
 });
