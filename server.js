@@ -266,6 +266,9 @@ const activeBots = new Map();
 const resetTokens = new Map();
 const pendingSubscribers = new Map();
 
+// NEW: Track used bot tokens to prevent reuse across accounts
+const usedBotTokens = new Map(); // token → userId
+
 // ==================== LOAD ADMIN SETTINGS ON STARTUP ====================
 async function loadAdminSettings() {
   try {
@@ -458,11 +461,19 @@ const authenticateToken = async (req, res, next) => {
 // ==================== TELEGRAM BOT - PURE WEBHOOK MODE ====================
 function launchUserBot(user) {
   if (activeBots.has(user.id)) {
-    activeBots.get(user.id).stop('Replaced');
+    const oldBot = activeBots.get(user.id);
+    // Remove old token from tracking if it exists
+    if (user.telegramBotToken) {
+      usedBotTokens.delete(user.telegramBotToken);
+    }
+    oldBot.stop('Replaced');
     activeBots.delete(user.id);
   }
 
   if (!user.telegramBotToken) return;
+
+  // Register the new token
+  usedBotTokens.set(user.telegramBotToken, user.id);
 
   const bot = new Telegraf(user.telegramBotToken);
 
@@ -565,6 +576,8 @@ function launchUserBot(user) {
       }
     } catch (err) {
       console.error('Webhook setup error for ' + user.email + ':', err.message);
+      // Cleanup on failure
+      usedBotTokens.delete(user.telegramBotToken);
     }
   })();
 
@@ -783,6 +796,11 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
     const botUsername = response.data.result.username.replace(/^@/, '');
 
+    // NEW: Prevent reuse of the same bot token by another account
+    if (usedBotTokens.has(token) && usedBotTokens.get(token) !== req.user.id) {
+      return res.status(400).json({ error: 'Bot already in use' });
+    }
+
     req.user.telegramBotToken = token;
     req.user.botUsername = botUsername;
     req.user.isTelegramConnected = false;
@@ -816,6 +834,11 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
     const botUsername = response.data.result.username.replace(/^@/, '');
 
+    // NEW: Prevent reuse of the same bot token by another account
+    if (usedBotTokens.has(token) && usedBotTokens.get(token) !== req.user.id) {
+      return res.status(400).json({ error: 'Bot already in use' });
+    }
+
     req.user.telegramBotToken = token;
     req.user.botUsername = botUsername;
     req.user.isTelegramConnected = false;
@@ -840,6 +863,11 @@ app.post('/api/auth/disconnect-telegram', authenticateToken, async (req, res) =>
   if (activeBots.has(req.user.id)) {
     activeBots.get(req.user.id).stop('Disconnected');
     activeBots.delete(req.user.id);
+  }
+
+  // NEW: Clean up token tracking
+  if (req.user.telegramBotToken) {
+    usedBotTokens.delete(req.user.telegramBotToken);
   }
 
   req.user.telegramBotToken = null;
@@ -1150,7 +1178,21 @@ app.post('/api/forms/delete', authenticateToken, async (req, res) => {
 app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   const shortId = req.params.shortId;
   const { name, email } = req.body;
-  if (!name || !name.trim() || !email || !email.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
+
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
+  if (!email || !email.trim()) return res.status(400).json({ error: 'Contact (email or phone) is required' });
+
+  const contactInput = email.trim();
+
+  // NEW: Validate that contact is either a valid email OR a valid international phone number
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+  const phoneRegex = /^\+[1-9]\d{1,14}$/; // E.164 format
+
+  if (!emailRegex.test(contactInput) && !phoneRegex.test(contactInput)) {
+    return res.status(400).json({ 
+      error: 'Invalid contact: must be a valid email or phone number in international format (e.g. +2348012345678)' 
+    });
+  }
 
   const form = await FormPage.findOne({ shortId });
   if (!form) return res.status(404).json({ error: 'Form not found' });
@@ -1158,7 +1200,7 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   const owner = await User.findOne({ id: form.userId });
   if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Bot not connected' });
 
-  const contactValue = email.trim().toLowerCase();
+  const contactValue = contactInput.toLowerCase(); // store emails in lowercase
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
   let contact = await Contact.findOne({ userId: owner.id, contact: contactValue });
