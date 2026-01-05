@@ -124,7 +124,7 @@ setInterval(() => {
   for (const [userId, bucket] of userCache.entries()) {
     if (now - bucket.lastAccess > INACTIVE_THRESHOLD) {
       userCache.delete(userId);
-      console.log(`🧹 Cleaned cache for inactive user: ${userId}`);
+      console.log('🧹 Cleaned cache for inactive user: ' + userId);
     }
   }
 }, 10 * 60 * 1000);
@@ -559,12 +559,12 @@ function launchUserBot(user) {
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
       const success = await bot.telegram.setWebhook(webhookUrl);
       if (success) {
-        console.log(`Webhook set successfully for @\( {user.botUsername || 'unknown'} → \){webhookUrl}`);
+        console.log('Webhook set successfully for @' + (user.botUsername || 'unknown') + ' → ' + webhookUrl);
       } else {
-        console.error(`Failed to set webhook for @${user.botUsername}`);
+        console.error('Failed to set webhook for @' + user.botUsername);
       }
     } catch (err) {
-      console.error(`Webhook setup error for ${user.email}:`, err.message);
+      console.error('Webhook setup error for ' + user.email + ':', err.message);
     }
   })();
 
@@ -575,7 +575,7 @@ function launchUserBot(user) {
 
 // Public Landing Page
 app.get('/p/:shortId', async (req, res) => {
-  const key = `landing:${req.params.shortId}`;
+  const key = 'landing:' + req.params.shortId;
   const cached = publicCache.get(key);
 
   if (cached && Date.now() - cached.timestamp < TTL.public) {
@@ -586,13 +586,13 @@ app.get('/p/:shortId', async (req, res) => {
   if (!page) return res.status(404).render('404');
 
   const data = { title: page.title, blocks: page.config.blocks };
-  publicCache.set(key, { data, timestamp: Date.now() });
+  publicCache.set(key, { data: data, timestamp: Date.now() });
   res.render('landing', data);
 });
 
 // Public Form Page
 app.get('/f/:shortId', async (req, res) => {
-  const key = `form:${req.params.shortId}`;
+  const key = 'form:' + req.params.shortId;
   const cached = publicCache.get(key);
 
   if (cached && Date.now() - cached.timestamp < TTL.public) {
@@ -603,7 +603,7 @@ app.get('/f/:shortId', async (req, res) => {
   if (!form) return res.status(404).render('404');
 
   const data = { title: form.title, state: form.state };
-  publicCache.set(key, { data, timestamp: Date.now() });
+  publicCache.set(key, { data: data, timestamp: Date.now() });
   res.render('form', data);
 });
 
@@ -624,7 +624,7 @@ app.get('/api/pages', authenticateToken, async (req, res) => {
     title: p.title,
     createdAt: p.createdAt,
     updatedAt: p.updatedAt,
-    url: `\( {protocol}:// \){host}/p/${p.shortId}`
+    url: protocol + '://' + host + '/p/' + p.shortId
   }));
 
   bucket.pages = formatted;
@@ -649,7 +649,7 @@ app.get('/api/forms', authenticateToken, async (req, res) => {
     title: f.title,
     createdAt: f.createdAt,
     updatedAt: f.updatedAt,
-    url: `\( {protocol}:// \){host}/f/${f.shortId}`
+    url: protocol + '://' + host + '/f/' + f.shortId
   }));
 
   bucket.forms = formatted;
@@ -684,7 +684,7 @@ app.get('/api/contacts', authenticateToken, async (req, res) => {
 
 // Single Page API (public)
 app.get('/api/page/:shortId', async (req, res) => {
-  const key = `apiPage:${req.params.shortId}`;
+  const key = 'apiPage:' + req.params.shortId;
   const cached = publicCache.get(key);
   if (cached && Date.now() - cached.timestamp < TTL.public) {
     return res.json(cached.data);
@@ -694,13 +694,13 @@ app.get('/api/page/:shortId', async (req, res) => {
   if (!page) return res.status(404).json({ error: 'Page not found' });
 
   const data = { shortId: page.shortId, title: page.title, config: page.config };
-  publicCache.set(key, { data, timestamp: Date.now() });
+  publicCache.set(key, { data: data, timestamp: Date.now() });
   res.json(data);
 });
 
 // Single Form API (public)
 app.get('/api/form/:shortId', async (req, res) => {
-  const key = `apiForm:${req.params.shortId}`;
+  const key = 'apiForm:' + req.params.shortId;
   const cached = publicCache.get(key);
   if (cached && Date.now() - cached.timestamp < TTL.public) {
     return res.json(cached.data);
@@ -715,7 +715,7 @@ app.get('/api/form/:shortId', async (req, res) => {
     state: form.state,
     welcomeMessage: form.welcomeMessage
   };
-  publicCache.set(key, { data, timestamp: Date.now() });
+  publicCache.set(key, { data: data, timestamp: Date.now() });
   res.json(data);
 });
 
@@ -1021,29 +1021,7 @@ app.post('/api/subscription/webhook', async (req, res) => {
 });
 
 app.get('/subscription-success', (req, res) => {
-  res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Payment Successful</title>
-  <style>
-    body{font-family:system-ui,sans-serif;background:#0a0a0a;color:#00ff41;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}
-    .box{background:#111;padding:60px;border-radius:20px;text-align:center;box-shadow:0 0 30px rgba(0,255,65,0.2);}
-    h1{margin:0 0 20px;font-size:3em;color:#00ff41;}
-    p{font-size:1.3em;margin:20px 0;line-height:1.6;}
-    a{display:inline-block;margin-top:30px;padding:14px 32px;background:#00ff41;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;font-size:1.1em;}
-    a:hover{background:#00cc33;}
-  </style>
-</head>
-<body>
-  <div class="box">
-    <h1>✓ Payment Successful!</h1>
-    <p>Your subscription is now <strong>active</strong>.</p>
-    <p>You have unlimited broadcasts, landing pages, and forms.</p>
-    <p><a href="/">← Return to Dashboard</a></p>
-  </div>
-</body>
-</html>`);
+  res.send('<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Payment Successful</title>\n  <style>\n    body{font-family:system-ui,sans-serif;background:#0a0a0a;color:#00ff41;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}\n    .box{background:#111;padding:60px;border-radius:20px;text-align:center;box-shadow:0 0 30px rgba(0,255,65,0.2);}\n    h1{margin:0 0 20px;font-size:3em;color:#00ff41;}\n    p{font-size:1.3em;margin:20px 0;line-height:1.6;}\n    a{display:inline-block;margin-top:30px;padding:14px 32px;background:#00ff41;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;font-size:1.1em;}\n    a:hover{background:#00cc33;}\n  </style>\n</head>\n<body>\n  <div class="box">\n    <h1>✓ Payment Successful!</h1>\n    <p>Your subscription is now <strong>active</strong>.</p>\n    <p>You have unlimited broadcasts, landing pages, and forms.</p>\n    <p><a href="/">← Return to Dashboard</a></p>\n  </div>\n</body>\n</html>');
 });
 
 // ==================== LANDING PAGES WRITE ROUTES WITH INVALIDATION ====================
@@ -1087,11 +1065,11 @@ app.post('/api/pages/save', authenticateToken, async (req, res) => {
   );
 
   invalidateUserCache(req.user.id, 'pages');
-  invalidatePublicCache(`landing:${finalShortId}`);
-  invalidatePublicCache(`apiPage:${finalShortId}`);
+  invalidatePublicCache('landing:' + finalShortId);
+  invalidatePublicCache('apiPage:' + finalShortId);
 
   const url = req.protocol + '://' + req.get('host') + '/p/' + finalShortId;
-  res.json({ success: true, shortId: finalShortId, url });
+  res.json({ success: true, shortId: finalShortId, url: url });
 });
 
 app.post('/api/pages/delete', authenticateToken, async (req, res) => {
@@ -1101,8 +1079,8 @@ app.post('/api/pages/delete', authenticateToken, async (req, res) => {
   await LandingPage.deleteOne({ shortId });
 
   invalidateUserCache(req.user.id, 'pages');
-  invalidatePublicCache(`landing:${shortId}`);
-  invalidatePublicCache(`apiPage:${shortId}`);
+  invalidatePublicCache('landing:' + shortId);
+  invalidatePublicCache('apiPage:' + shortId);
 
   res.json({ success: true });
 });
@@ -1147,11 +1125,11 @@ app.post('/api/forms/save', authenticateToken, async (req, res) => {
   );
 
   invalidateUserCache(req.user.id, 'forms');
-  invalidatePublicCache(`form:${finalShortId}`);
-  invalidatePublicCache(`apiForm:${finalShortId}`);
+  invalidatePublicCache('form:' + finalShortId);
+  invalidatePublicCache('apiForm:' + finalShortId);
 
   const url = req.protocol + '://' + req.get('host') + '/f/' + finalShortId;
-  res.json({ success: true, shortId: finalShortId, url });
+  res.json({ success: true, shortId: finalShortId, url: url });
 });
 
 app.post('/api/forms/delete', authenticateToken, async (req, res) => {
@@ -1162,8 +1140,8 @@ app.post('/api/forms/delete', authenticateToken, async (req, res) => {
   await Contact.deleteMany({ shortId, userId: req.user.id });
 
   invalidateUserCache(req.user.id, 'forms');
-  invalidatePublicCache(`form:${shortId}`);
-  invalidatePublicCache(`apiForm:${shortId}`);
+  invalidatePublicCache('form:' + shortId);
+  invalidatePublicCache('apiForm:' + shortId);
 
   res.json({ success: true });
 });
@@ -1230,7 +1208,6 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
   res.json({ success: true, deepLink });
 
-  // Invalidate owner's contacts cache
   invalidateUserCache(owner.id, 'contacts');
 });
 
@@ -1341,7 +1318,7 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   }
 
   const result = await executeBroadcast(req.user.id, message.trim());
-  invalidateUserCache(req.user.id, 'contacts'); // Contacts may have changed (blocked users)
+  invalidateUserCache(req.user.id, 'contacts');
   res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total });
 });
 
@@ -1432,58 +1409,7 @@ app.get('/admin-limits', async (req, res) => {
   const totalUsers = await User.countDocuments({});
   const payingUsers = await User.countDocuments({ isSubscribed: true, subscriptionEndDate: { $gt: new Date() } });
 
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Server Admin Panel</title>
-  <style>
-    body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 600px; }
-    h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }
-    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
-    .stat-box { background: #2d2d2d; padding: 20px; border-radius: 10px; text-align: center; }
-    .stat-number { font-size: 2.5em; font-weight: bold; color: #00ff41; margin: 10px 0; }
-    .stat-label { font-size: 1.1em; color: #aaa; }
-    label { display: block; margin: 20px 0 8px; font-size: 1.1em; }
-    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }
-    button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; margin-top: 20px; }
-    button:hover { background: #e6c200; }
-    .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Server Admin Panel</h1>
-    <div class="stats">
-      <div class="stat-box">
-        <div class="stat-number">${totalUsers}</div>
-        <div class="stat-label">Total Users</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-number">${payingUsers}</div>
-        <div class="stat-label">Paying Users</div>
-      </div>
-    </div>
-    <form method="POST">
-      <label>Owner Password</label>
-      <input type="password" name="password" required placeholder="Enter admin password">
-      <label>Daily Broadcasts per User (Free)</label>
-      <input type="number" name="daily_broadcast" min="1" value="${adminSettingsCache.dailyBroadcastLimit}" required>
-      <label>Max Landing Pages per User (Free)</label>
-      <input type="number" name="max_pages" min="1" value="${adminSettingsCache.maxLandingPages}" required>
-      <label>Max Forms per User (Free)</label>
-      <input type="number" name="max_forms" min="1" value="${adminSettingsCache.maxForms}" required>
-      <div class="current">
-        <strong>Current Free Tier Limits:</strong><br>
-        Broadcasts/day: \( {adminSettingsCache.dailyBroadcastLimit} | Pages: \){adminSettingsCache.maxLandingPages} | Forms: ${adminSettingsCache.maxForms}
-      </div>
-      <button type="submit">Update Limits</button>
-    </form>
-  </div>
-</body>
-</html>`;
+  const html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n  <title>Server Admin Panel</title>\n  <style>\n    body { font-family: \'Segoe UI\', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }\n    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 600px; }\n    h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }\n    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }\n    .stat-box { background: #2d2d2d; padding: 20px; border-radius: 10px; text-align: center; }\n    .stat-number { font-size: 2.5em; font-weight: bold; color: #00ff41; margin: 10px 0; }\n    .stat-label { font-size: 1.1em; color: #aaa; }\n    label { display: block; margin: 20px 0 8px; font-size: 1.1em; }\n    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }\n    button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; margin-top: 20px; }\n    button:hover { background: #e6c200; }\n    .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }\n  </style>\n</head>\n<body>\n  <div class="container">\n    <h1>Server Admin Panel</h1>\n    <div class="stats">\n      <div class="stat-box">\n        <div class="stat-number">' + totalUsers + '</div>\n        <div class="stat-label">Total Users</div>\n      </div>\n      <div class="stat-box">\n        <div class="stat-number">' + payingUsers + '</div>\n        <div class="stat-label">Paying Users</div>\n      </div>\n    </div>\n    <form method="POST">\n      <label>Owner Password</label>\n      <input type="password" name="password" required placeholder="Enter admin password">\n      <label>Daily Broadcasts per User (Free)</label>\n      <input type="number" name="daily_broadcast" min="1" value="' + adminSettingsCache.dailyBroadcastLimit + '" required>\n      <label>Max Landing Pages per User (Free)</label>\n      <input type="number" name="max_pages" min="1" value="' + adminSettingsCache.maxLandingPages + '" required>\n      <label>Max Forms per User (Free)</label>\n      <input type="number" name="max_forms" min="1" value="' + adminSettingsCache.maxForms + '" required>\n      <div class="current">\n        <strong>Current Free Tier Limits:</strong><br>\n        Broadcasts/day: ' + adminSettingsCache.dailyBroadcastLimit + ' | Pages: ' + adminSettingsCache.maxLandingPages + ' | Forms: ' + adminSettingsCache.maxForms + '\n      </div>\n      <button type="submit">Update Limits</button>\n    </form>\n  </div>\n</body>\n</html>';
   res.send(html);
 });
 
@@ -1517,31 +1443,7 @@ app.post('/admin-limits', async (req, res) => {
 
     console.log('Admin limits updated and saved to DB:', adminSettingsCache);
 
-    res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Limits Updated</title>
-  <style>
-    body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }
-    h1 { color: #4caf50; }
-    .success { font-size: 1.2em; margin: 20px 0; }
-    a { color: #ffd700; text-decoration: none; font-weight: bold; }
-    a:hover { text-decoration: underline; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Success!</h1>
-    <p class="success">Server limits updated and <strong>saved permanently</strong>:</p>
-    <p><strong>Daily Broadcasts:</strong> ${newDaily}<br>
-       <strong>Max Pages:</strong> ${newPages}<br>
-       <strong>Max Forms:</strong> ${newForms}</p>
-    <p><a href="/admin-limits">← Back to Control Panel</a></p>
-  </div>
-</body>
-</html>`);
+    res.send('<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Limits Updated</title>\n  <style>\n    body { font-family: \'Segoe UI\', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }\n    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }\n    h1 { color: #4caf50; }\n    .success { font-size: 1.2em; margin: 20px 0; }\n    a { color: #ffd700; text-decoration: none; font-weight: bold; }\n    a:hover { text-decoration: underline; }\n  </style>\n</head>\n<body>\n  <div class="container">\n    <h1>Success!</h1>\n    <p class="success">Server limits updated and <strong>saved permanently</strong>:</p>\n    <p><strong>Daily Broadcasts:</strong> ' + newDaily + '<br>\n       <strong>Max Pages:</strong> ' + newPages + '<br>\n       <strong>Max Forms:</strong> ' + newForms + '</p>\n    <p><a href="/admin-limits">← Back to Control Panel</a></p>\n  </div>\n</body>\n</html>');
   } catch (err) {
     console.error('Failed to save admin settings:', err);
     res.status(500).send('Failed to save settings');
@@ -1566,7 +1468,7 @@ mongoose.connection.once('open', async () => {
   for (const user of usersWithBots) {
     launchUserBot(user);
   }
-  console.log(`Launched ${usersWithBots.length} bots in pure webhook mode`);
+  console.log('Launched ' + usersWithBots.length + ' bots in pure webhook mode');
 });
 
 process.on('SIGTERM', () => {
@@ -1579,10 +1481,9 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\n🚀 SENDEM SERVER — FULLY CACHED WITH PER-USER TTL');
-  console.log('✅ High-read endpoints cached');
-  console.log('✅ Instant invalidation on writes');
-  console.log('✅ No stale data ever');
-  console.log('✅ Auto memory cleanup');
-  console.log(`Server running on port \( {PORT} | Domain: https:// \){DOMAIN}\n`);
+  console.log('\nSENDEM SERVER — FULLY CACHED WITH STRING CONCATENATION URLs');
+  console.log('✅ All URLs now use classic string concatenation (+)');
+  console.log('✅ High-performance per-user TTL caching');
+  console.log('✅ Instant cache invalidation');
+  console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
