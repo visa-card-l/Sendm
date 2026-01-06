@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const { Telegraf } = require('telegraf');
 const path = require('path');
 const mongoose = require('mongoose');
+const axios = require('axios');
 const crypto = require('crypto');
 
 const app = express();
@@ -28,7 +29,7 @@ if (!DOMAIN) {
 
 if (!WEBHOOK_SECRET || WEBHOOK_SECRET.trim() === '') {
   WEBHOOK_SECRET = crypto.randomBytes(32).toString('hex');
-  console.warn('⚠️  WARNING: WEBHOOK_SECRET not set in .env! Generated temporary one:');
+  console.warn('âš ï¸  WARNING: WEBHOOK_SECRET not set in .env! Generated temporary one:');
   console.warn('     ' + WEBHOOK_SECRET);
   console.warn('     Add it to your .env file to keep it permanent across restarts:');
   console.warn('     WEBHOOK_SECRET=' + WEBHOOK_SECRET + '\n');
@@ -37,13 +38,13 @@ if (!WEBHOOK_SECRET || WEBHOOK_SECRET.trim() === '') {
 }
 
 if (JWT_SECRET.includes('fallback')) {
-  console.warn('⚠️  WARNING: JWT_SECRET not set in .env! Using insecure fallback.');
+  console.warn('âš ï¸  WARNING: JWT_SECRET not set in .env! Using insecure fallback.');
 }
 if (PAYSTACK_SECRET_KEY.startsWith('sk_test_fallback')) {
-  console.warn('⚠️  WARNING: PAYSTACK_SECRET_KEY not set in .env!');
+  console.warn('âš ï¸  WARNING: PAYSTACK_SECRET_KEY not set in .env!');
 }
 
-const MONTHLY_PRICE_KOBO = 500000; // ₦5,000 in kobo
+const MONTHLY_PRICE_KOBO = 500000; // â‚¦5,000 in kobo
 
 // Batching config
 const BATCH_SIZE = 25;
@@ -51,8 +52,8 @@ const BATCH_INTERVAL_MS = 15000;
 const MAX_MSG_LENGTH = 4000;
 
 // ==================== PER-USER & PUBLIC CACHE WITH TTL ====================
-const userCache = new Map();     // userId → cache bucket
-const publicCache = new Map();   // key like 'landing:abc123' → { data, timestamp }
+const userCache = new Map();     // userId â†’ cache bucket
+const publicCache = new Map();   // key like 'landing:abc123' â†’ { data, timestamp }
 
 // TTL settings (in milliseconds)
 const TTL = {
@@ -123,7 +124,7 @@ setInterval(() => {
   for (const [userId, bucket] of userCache.entries()) {
     if (now - bucket.lastAccess > INACTIVE_THRESHOLD) {
       userCache.delete(userId);
-      console.log('🧹 Cleaned cache for inactive user: ' + userId);
+      console.log('ðŸ§¹ Cleaned cache for inactive user: ' + userId);
     }
   }
 }, 10 * 60 * 1000);
@@ -144,7 +145,7 @@ mongoose.connect(MONGODB_URI, {
   socketTimeoutMS: 45000,
   connectTimeoutMS: 30000,
 }).then(() => {
-  console.log('✅ MongoDB connected');
+  console.log('âœ… MongoDB connected');
 }).catch(err => {
   console.error('MongoDB connection failed:', err.message);
   process.exit(1);
@@ -265,16 +266,76 @@ const activeBots = new Map();
 const resetTokens = new Map();
 const pendingSubscribers = new Map();
 
-// ==================== UTILITIES ====================
-async function isBotTokenInUse(token, excludeUserId = null) {
-  const query = { telegramBotToken: token.trim() };
-  if (excludeUserId) {
-    query.id = { $ne: excludeUserId };
+// ==================== LOAD ADMIN SETTINGS ON STARTUP ====================
+async function loadAdminSettings() {
+  try {
+    const settings = await AdminSettings.getSettings();
+    adminSettingsCache = {
+      dailyBroadcastLimit: settings.dailyBroadcastLimit,
+      maxLandingPages: settings.maxLandingPages,
+      maxForms: settings.maxForms
+    };
+    console.log('âœ… Admin settings loaded from DB:', adminSettingsCache);
+  } catch (err) {
+    console.error('Failed to load admin settings:', err);
   }
-  const existingUser = await User.findOne(query);
-  return !!existingUser;
 }
 
+// ==================== MIDDLEWARE ====================
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.static('public'));
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many attempts' }
+});
+
+const formSubmitLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many submissions to this form. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip + '::' + req.params.shortId,
+  skip: (req) => !req.params.shortId
+});
+
+// ==================== WEBHOOK ENDPOINT ====================
+app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', async (req, res) => {
+  const userId = req.params.userId;
+  const bot = activeBots.get(userId);
+
+  let update;
+  try {
+    if (Buffer.isBuffer(req.body)) {
+      update = JSON.parse(req.body.toString('utf8'));
+    } else if (req.body && typeof req.body === 'object') {
+      update = req.body;
+    } else {
+      throw new Error('Invalid body format');
+    }
+  } catch (err) {
+    console.error('Failed to parse webhook body for user ' + userId + ':', err);
+    return res.sendStatus(400);
+  }
+
+  if (bot) {
+    try {
+      await bot.handleUpdate(update);
+    } catch (err) {
+      console.error('Webhook handle error for user ' + userId + ':', err);
+    }
+  }
+
+  res.sendStatus(200);
+});
+
+// ==================== UTILITIES ====================
 function sanitizeTelegramHtml(unsafe) {
   if (!unsafe || typeof unsafe !== 'string') return '';
   const allowedTags = new Set(['b','strong','i','em','u','ins','s','strike','del','span','tg-spoiler','a','code','pre','tg-emoji']);
@@ -417,12 +478,12 @@ function launchUserBot(user) {
           telegramChatId: chatId
         });
 
-        const contactsByContact = await Contact.find({ userId: user.id, contact: sub.contact });
+        const contactsByEmail = await Contact.find({ userId: user.id, contact: sub.contact });
 
         if (!targetContact) {
-          targetContact = contactsByContact.find(c => c.status === 'subscribed') ||
-                          contactsByContact.find(c => c.shortId === sub.shortId) ||
-                          contactsByContact[0];
+          targetContact = contactsByEmail.find(c => c.status === 'subscribed') ||
+                          contactsByEmail.find(c => c.shortId === sub.shortId) ||
+                          contactsByEmail[0];
         }
 
         if (!targetContact) {
@@ -498,7 +559,7 @@ function launchUserBot(user) {
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
       const success = await bot.telegram.setWebhook(webhookUrl);
       if (success) {
-        console.log('Webhook set successfully for @' + (user.botUsername || 'unknown') + ' → ' + webhookUrl);
+        console.log('Webhook set successfully for @' + (user.botUsername || 'unknown') + ' â†’ ' + webhookUrl);
       } else {
         console.error('Failed to set webhook for @' + user.botUsername);
       }
@@ -509,75 +570,6 @@ function launchUserBot(user) {
 
   activeBots.set(user.id, bot);
 }
-
-// ==================== LOAD ADMIN SETTINGS ON STARTUP ====================
-async function loadAdminSettings() {
-  try {
-    const settings = await AdminSettings.getSettings();
-    adminSettingsCache = {
-      dailyBroadcastLimit: settings.dailyBroadcastLimit,
-      maxLandingPages: settings.maxLandingPages,
-      maxForms: settings.maxForms
-    };
-    console.log('✅ Admin settings loaded from DB:', adminSettingsCache);
-  } catch (err) {
-    console.error('Failed to load admin settings:', err);
-  }
-}
-
-// ==================== MIDDLEWARE ====================
-app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views'));
-app.use(express.static('public'));
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many attempts' }
-});
-
-const formSubmitLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many submissions to this form. Please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => req.ip + '::' + req.params.shortId,
-  skip: (req) => !req.params.shortId
-});
-
-// ==================== WEBHOOK ENDPOINT ====================
-app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', async (req, res) => {
-  const userId = req.params.userId;
-  const bot = activeBots.get(userId);
-
-  let update;
-  try {
-    if (Buffer.isBuffer(req.body)) {
-      update = JSON.parse(req.body.toString('utf8'));
-    } else if (req.body && typeof req.body === 'object') {
-      update = req.body;
-    } else {
-      throw new Error('Invalid body format');
-    }
-  } catch (err) {
-    console.error('Failed to parse webhook body for user ' + userId + ':', err);
-    return res.sendStatus(400);
-  }
-
-  if (bot) {
-    try {
-      await bot.handleUpdate(update);
-    } catch (err) {
-      console.error('Webhook handle error for user ' + userId + ':', err);
-    }
-  }
-
-  res.sendStatus(200);
-});
 
 // ==================== CACHED HIGH-READ ENDPOINTS ====================
 
@@ -785,38 +777,11 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
   const token = botToken.trim();
 
-  console.log(`\n[Telegram Connect] User \( {req.user.email} attempting to connect bot token: \){token.substring(0, 10)}...${token.slice(-4)}`);
-
-  const inUse = await isBotTokenInUse(token, req.user.id);
-  if (inUse) {
-    console.log(`[Telegram Connect] Token already in use by another account`);
-    return res.status(409).json({ error: 'Bot already in use by another account' });
-  }
-
-  const url = `https://api.telegram.org/bot${token}/getMe`;
-  console.log(`[Telegram Connect] Fetching: ${url}`);
-
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe');
+    if (!response.data.ok) return res.status(400).json({ error: 'Invalid bot token' });
 
-    console.log(`[Telegram Connect] Response status: \( {response.status} \){response.statusText}`);
-
-    if (!response.ok) {
-      let errorBody = '';
-      try {
-        const errorData = await response.json();
-        errorBody = JSON.stringify(errorData);
-      } catch (_) {
-        errorBody = await response.text();
-      }
-      console.log(`[Telegram Connect] Telegram API error response: ${errorBody}`);
-      return res.status(400).json({ error: 'Invalid bot token' });
-    }
-
-    const data = await response.json();
-    console.log(`[Telegram Connect] Success! Bot info: ${JSON.stringify(data.result)}`);
-
-    const botUsername = data.result.username.replace(/^@/, '');
+    const botUsername = response.data.result.username.replace(/^@/, '');
 
     req.user.telegramBotToken = token;
     req.user.botUsername = botUsername;
@@ -834,12 +799,8 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
       startLink
     });
   } catch (err) {
-    console.error('[Telegram Connect] Failed to validate token:');
-    console.error('   Message:', err.message);
-    if (err.cause) console.error('   Cause:', err.cause);
-    if (err.name) console.error('   Name:', err.name);
-    console.error('   Stack:', err.stack);
-    res.status(500).json({ error: 'Failed to validate bot token (network issue)' });
+    console.error('Telegram connect error:', err.message);
+    res.status(500).json({ error: 'Failed to validate bot token' });
   }
 });
 
@@ -849,38 +810,11 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
   const token = newBotToken.trim();
 
-  console.log(`\n[Change Bot Token] User \( {req.user.email} attempting to change to: \){token.substring(0, 10)}...${token.slice(-4)}`);
-
-  const inUse = await isBotTokenInUse(token, req.user.id);
-  if (inUse) {
-    console.log(`[Change Bot Token] Token already in use by another account`);
-    return res.status(409).json({ error: 'Bot already in use by another account' });
-  }
-
-  const url = `https://api.telegram.org/bot${token}/getMe`;
-  console.log(`[Change Bot Token] Fetching: ${url}`);
-
   try {
-    const response = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe');
+    if (!response.data.ok) return res.status(400).json({ error: 'Invalid bot token' });
 
-    console.log(`[Change Bot Token] Response status: \( {response.status} \){response.statusText}`);
-
-    if (!response.ok) {
-      let errorBody = '';
-      try {
-        const errorData = await response.json();
-        errorBody = JSON.stringify(errorData);
-      } catch (_) {
-        errorBody = await response.text();
-      }
-      console.log(`[Change Bot Token] Telegram API error response: ${errorBody}`);
-      return res.status(400).json({ error: 'Invalid bot token' });
-    }
-
-    const data = await response.json();
-    console.log(`[Change Bot Token] Success! New bot info: ${JSON.stringify(data.result)}`);
-
-    const botUsername = data.result.username.replace(/^@/, '');
+    const botUsername = response.data.result.username.replace(/^@/, '');
 
     req.user.telegramBotToken = token;
     req.user.botUsername = botUsername;
@@ -898,12 +832,7 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
       startLink
     });
   } catch (err) {
-    console.error('[Change Bot Token] Failed to validate new token:');
-    console.error('   Message:', err.message);
-    if (err.cause) console.error('   Cause:', err.cause);
-    if (err.name) console.error('   Name:', err.name);
-    console.error('   Stack:', err.stack);
-    res.status(500).json({ error: 'Failed to validate new token (network issue)' });
+    res.status(500).json({ error: 'Failed to validate new token' });
   }
 });
 
@@ -938,7 +867,7 @@ async function send2FACodeViaBot(user, code) {
   try {
     await activeBots.get(user.id).telegram.sendMessage(
       user.telegramChatId,
-      'Security Alert – Password Reset\n\nYour 6-digit code:\n\n<b>' + code + '</b>\n\nValid for 10 minutes.',
+      'Security Alert â€“ Password Reset\n\nYour 6-digit code:\n\n<b>' + code + '</b>\n\nValid for 10 minutes.',
       { parse_mode: 'HTML' }
     );
     return true;
@@ -1019,38 +948,32 @@ app.post('/api/subscription/initiate', authenticateToken, async (req, res) => {
   }
 
   try {
-    const response = await fetch('https://api.paystack.co/transaction/initialize', {
-      method: 'POST',
-      headers: {
-        Authorization: 'Bearer ' + PAYSTACK_SECRET_KEY,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
+    const response = await axios.post(
+      'https://api.paystack.co/transaction/initialize',
+      {
         email: req.user.email,
         amount: MONTHLY_PRICE_KOBO,
         currency: 'NGN',
         callback_url: req.protocol + '://' + req.get('host') + '/subscription-success',
         metadata: { userId: req.user.id, plan: 'premium-monthly' }
-      })
-    });
+      },
+      {
+        headers: {
+          Authorization: 'Bearer ' + PAYSTACK_SECRET_KEY,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
 
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error('Paystack init failed:', errText);
-      throw new Error('Paystack initialization failed');
-    }
-
-    const paystackData = await response.json();
-
-    const authorization_url = paystackData.data.authorization_url;
-    const reference = paystackData.data.reference;
+    const authorization_url = response.data.data.authorization_url;
+    const reference = response.data.data.reference;
 
     req.user.pendingPaymentReference = reference;
     await req.user.save();
 
     res.json({ success: true, authorizationUrl: authorization_url, reference });
   } catch (error) {
-    console.error('Paystack init error:', error.message);
+    console.error('Paystack init error:', error.response ? error.response.data : error.message);
     res.status(500).json({ error: 'Failed to initialize payment' });
   }
 });
@@ -1098,7 +1021,7 @@ app.post('/api/subscription/webhook', async (req, res) => {
 });
 
 app.get('/subscription-success', (req, res) => {
-  res.send('<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Payment Successful</title>\n  <style>\n    body{font-family:system-ui,sans-serif;background:#0a0a0a;color:#00ff41;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}\n    .box{background:#111;padding:60px;border-radius:20px;text-align:center;box-shadow:0 0 30px rgba(0,255,65,0.2);}\n    h1{margin:0 0 20px;font-size:3em;color:#00ff41;}\n    p{font-size:1.3em;margin:20px 0;line-height:1.6;}\n    a{display:inline-block;margin-top:30px;padding:14px 32px;background:#00ff41;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;font-size:1.1em;}\n    a:hover{background:#00cc33;}\n  </style>\n</head>\n<body>\n  <div class="box">\n    <h1>✓ Payment Successful!</h1>\n    <p>Your subscription is now <strong>active</strong>.</p>\n    <p>You have unlimited broadcasts, landing pages, and forms.</p>\n    <p><a href="/">← Return to Dashboard</a></p>\n  </div>\n</body>\n</html>');
+  res.send('<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Payment Successful</title>\n  <style>\n    body{font-family:system-ui,sans-serif;background:#0a0a0a;color:#00ff41;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}\n    .box{background:#111;padding:60px;border-radius:20px;text-align:center;box-shadow:0 0 30px rgba(0,255,65,0.2);}\n    h1{margin:0 0 20px;font-size:3em;color:#00ff41;}\n    p{font-size:1.3em;margin:20px 0;line-height:1.6;}\n    a{display:inline-block;margin-top:30px;padding:14px 32px;background:#00ff41;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;font-size:1.1em;}\n    a:hover{background:#00cc33;}\n  </style>\n</head>\n<body>\n  <div class="box">\n    <h1>âœ“ Payment Successful!</h1>\n    <p>Your subscription is now <strong>active</strong>.</p>\n    <p>You have unlimited broadcasts, landing pages, and forms.</p>\n    <p><a href="/">â† Return to Dashboard</a></p>\n  </div>\n</body>\n</html>');
 });
 
 // ==================== LANDING PAGES WRITE ROUTES WITH INVALIDATION ====================
@@ -1227,34 +1150,18 @@ app.post('/api/forms/delete', authenticateToken, async (req, res) => {
 app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   const shortId = req.params.shortId;
   const { name, email } = req.body;
-
-  if (!name || !name.trim()) return res.status(400).json({ error: 'Name is required' });
-  if (!email || !email.trim()) return res.status(400).json({ error: 'Contact (email or phone) is required' });
-
-  const contactValue = email.trim();
-
-  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
-  const phoneRegex = /^\+[1-9]\d{1,14}$/;
-
-  if (!emailRegex.test(contactValue) && !phoneRegex.test(contactValue)) {
-    return res.status(400).json({
-      error: 'Invalid contact: must be a valid email address or phone number (e.g. +2348012345678)'
-    });
-  }
+  if (!name || !name.trim() || !email || !email.trim()) return res.status(400).json({ error: 'Valid name and contact required' });
 
   const form = await FormPage.findOne({ shortId });
   if (!form) return res.status(404).json({ error: 'Form not found' });
 
   const owner = await User.findOne({ id: form.userId });
-  if (!owner || !owner.telegramBotToken || !owner.botUsername) {
-    return res.status(400).json({ error: 'Bot not connected' });
-  }
+  if (!owner || !owner.telegramBotToken || !owner.botUsername) return res.status(400).json({ error: 'Bot not connected' });
 
-  const normalizedContact = emailRegex.test(contactValue) ? contactValue.toLowerCase() : contactValue;
-
+  const contactValue = email.trim().toLowerCase();
   const payload = 'sub_' + shortId + '_' + uuidv4().slice(0, 12);
 
-  let contact = await Contact.findOne({ userId: owner.id, contact: normalizedContact });
+  let contact = await Contact.findOne({ userId: owner.id, contact: contactValue });
 
   if (contact) {
     if (contact.status === 'subscribed') {
@@ -1267,7 +1174,7 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
         userId: owner.id,
         shortId,
         name: name.trim(),
-        contact: normalizedContact,
+        contact: contactValue,
         createdAt: Date.now()
       });
 
@@ -1283,7 +1190,7 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
       userId: owner.id,
       shortId,
       name: name.trim(),
-      contact: normalizedContact,
+      contact: contactValue,
       status: 'pending',
       submittedAt: new Date()
     });
@@ -1294,7 +1201,7 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
     userId: owner.id,
     shortId,
     name: name.trim(),
-    contact: normalizedContact,
+    contact: contactValue,
     createdAt: Date.now()
   });
 
@@ -1383,7 +1290,7 @@ setInterval(async () => {
       if (result.error) {
         reportText += '<b>Failed to send</b>\n' + escapeHtml(result.error);
       } else {
-        const emoji = result.failed === 0 ? '✅' : '⚠️';
+        const emoji = result.failed === 0 ? 'âœ…' : 'âš ï¸';
         reportText += emoji + ' <b>' + result.sent + ' of ' + result.total + '</b> contacts received the message.\n';
         if (result.failed > 0) reportText += result.failed + ' failed to deliver.';
       }
@@ -1518,7 +1425,7 @@ app.post('/admin-limits', async (req, res) => {
   const newForms = parseInt(max_forms);
 
   if (isNaN(newDaily) || isNaN(newPages) || isNaN(newForms) || newDaily < 1 || newPages < 1 || newForms < 1) {
-    return res.send('<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Invalid Values<br>All limits must be ≥ 1</h1></body></html>');
+    return res.send('<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Invalid Values<br>All limits must be â‰¥ 1</h1></body></html>');
   }
 
   try {
@@ -1536,7 +1443,7 @@ app.post('/admin-limits', async (req, res) => {
 
     console.log('Admin limits updated and saved to DB:', adminSettingsCache);
 
-    res.send('<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Limits Updated</title>\n  <style>\n    body { font-family: \'Segoe UI\', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }\n    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }\n    h1 { color: #4caf50; }\n    .success { font-size: 1.2em; margin: 20px 0; }\n    a { color: #ffd700; text-decoration: none; font-weight: bold; }\n    a:hover { text-decoration: underline; }\n  </style>\n</head>\n<body>\n  <div class="container">\n    <h1>Success!</h1>\n    <p class="success">Server limits updated and <strong>saved permanently</strong>:</p>\n    <p><strong>Daily Broadcasts:</strong> ' + newDaily + '<br>\n       <strong>Max Pages:</strong> ' + newPages + '<br>\n       <strong>Max Forms:</strong> ' + newForms + '</p>\n    <p><a href="/admin-limits">← Back to Control Panel</a></p>\n  </div>\n</body>\n</html>');
+    res.send('<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Limits Updated</title>\n  <style>\n    body { font-family: \'Segoe UI\', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }\n    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }\n    h1 { color: #4caf50; }\n    .success { font-size: 1.2em; margin: 20px 0; }\n    a { color: #ffd700; text-decoration: none; font-weight: bold; }\n    a:hover { text-decoration: underline; }\n  </style>\n</head>\n<body>\n  <div class="container">\n    <h1>Success!</h1>\n    <p class="success">Server limits updated and <strong>saved permanently</strong>:</p>\n    <p><strong>Daily Broadcasts:</strong> ' + newDaily + '<br>\n       <strong>Max Pages:</strong> ' + newPages + '<br>\n       <strong>Max Forms:</strong> ' + newForms + '</p>\n    <p><a href="/admin-limits">â† Back to Control Panel</a></p>\n  </div>\n</body>\n</html>');
   } catch (err) {
     console.error('Failed to save admin settings:', err);
     res.status(500).send('Failed to save settings');
@@ -1574,6 +1481,9 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — WITH DETAILED TELEGRAM VALIDATION LOGGING');
+  console.log('\nSENDEM SERVER â€” FULLY CACHED WITH STRING CONCATENATION URLs');
+  console.log('âœ… All URLs now use classic string concatenation (+)');
+  console.log('âœ… High-performance per-user TTL caching');
+  console.log('âœ… Instant cache invalidation');
   console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
