@@ -264,6 +264,7 @@ broadcastDailySchema.index({ userId: 1, date: 1 }, { unique: true });
 const activeBots = new Map();
 const resetTokens = new Map();
 const pendingSubscribers = new Map();
+const lastWebhookSetTime = new Map(); // userId -> timestamp of last successful webhook set
 
 // ==================== TELEGRAM BOT MANAGEMENT ====================
 function launchUserBot(user) {
@@ -275,6 +276,9 @@ function launchUserBot(user) {
   if (!user.telegramBotToken) return;
 
   const bot = new Telegraf(user.telegramBotToken);
+
+  // Critical: Prevents "Bot is not running!" error in pure webhook mode
+  bot.webhookReply = false;
 
   bot.start(async (ctx) => {
     const payload = ctx.startPayload || '';
@@ -362,49 +366,80 @@ function launchUserBot(user) {
     console.error('Bot error for ' + user.email + ':', err);
   });
 
-  const webhookUrl = 'https://' + DOMAIN + '/webhook/' + WEBHOOK_SECRET + '/' + user.id;
+  const webhookPath = '/webhook/' + WEBHOOK_SECRET + '/' + user.id;
+  const webhookUrl = 'https://' + DOMAIN + webhookPath;
 
   (async () => {
     try {
+      const current = await bot.telegram.getWebhookInfo();
+
+      const alreadyCorrect =
+        current.url === webhookUrl &&
+        !current.has_custom_certificate &&
+        current.pending_update_count < 50;
+
+      const lastSet = lastWebhookSetTime.get(user.id) || 0;
+      const recentlySet = Date.now() - lastSet < 30 * 60 * 1000;
+
+      if (alreadyCorrect && recentlySet) {
+        console.log('Webhook already perfect & recent for ' + user.email + ' → skipping');
+        activeBots.set(user.id, bot);
+        return;
+      }
+
+      if (alreadyCorrect) {
+        console.log('Webhook correct but old → refreshing timestamp for ' + user.email);
+        lastWebhookSetTime.set(user.id, Date.now());
+        activeBots.set(user.id, bot);
+        return;
+      }
+
+      console.log('Webhook needs update for ' + user.email + ' → current: ' + (current.url || 'none'));
+
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
       console.log('Webhook cleaned for ' + user.email);
-      const success = await bot.telegram.setWebhook(webhookUrl);
-      if (success) {
-        console.log('Webhook set successfully for @' + (user.botUsername || 'unknown') + ' → ' + webhookUrl);
-      } else {
-        console.error('Failed to set webhook for ' + user.email);
+
+      await new Promise(resolve => setTimeout(resolve, 4000)); // generous breathing room
+
+      await new Promise(resolve => setTimeout(resolve, 2500));
+
+      let attempts = 0;
+      const maxAttempts = 3;
+
+      while (attempts < maxAttempts) {
+        try {
+          const success = await bot.telegram.setWebhook(webhookUrl, {
+            allowed_updates: ['message', 'callback_query', 'my_chat_member']
+          });
+
+          if (success) {
+            console.log('Webhook SUCCESSFULLY set for @' + (user.botUsername || 'unknown') + ' → ' + webhookUrl);
+            lastWebhookSetTime.set(user.id, Date.now());
+            activeBots.set(user.id, bot);
+            return;
+          }
+        } catch (err) {
+          attempts++;
+          if (err.response && err.response.error_code === 429) {
+            const retryAfter = err.response.parameters?.retry_after || 15;
+            console.warn('Rate limit hit for ' + user.email + ' - waiting ' + (retryAfter + 3) + 's (attempt ' + attempts + '/' + maxAttempts + ')');
+            await new Promise(r => setTimeout(r, (retryAfter + 3) * 1000));
+          } else {
+            console.error('Webhook set FAILED for ' + user.email + ': ' + err.message);
+            throw err;
+          }
+        }
       }
+
+      console.error('Gave up setting webhook for ' + user.email + ' after ' + maxAttempts + ' attempts');
     } catch (err) {
-      console.error('Webhook setup error for ' + user.email + ':', err.message);
+      console.error('Webhook setup completely failed for ' + user.email + ': ' + err.message);
+    } finally {
+      // Always keep the bot instance available for handleUpdate
+      activeBots.set(user.id, bot);
     }
   })();
-
-  activeBots.set(user.id, bot);
 }
-
-// ==================== MIDDLEWARE ====================
-app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views'));
-app.use(express.static('public'));
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many attempts' }
-});
-
-const formSubmitLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many submissions to this form. Please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => req.ip + '::' + req.params.shortId,
-  skip: (req) => !req.params.shortId
-});
 
 // ==================== WEBHOOK ENDPOINT ====================
 app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', async (req, res) => {
@@ -434,6 +469,30 @@ app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', async (req, res) => {
   }
 
   res.sendStatus(200);
+});
+
+// ==================== MIDDLEWARE ====================
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.static('public'));
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many attempts' }
+});
+
+const formSubmitLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many submissions to this form. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip + '::' + req.params.shortId,
+  skip: (req) => !req.params.shortId
 });
 
 // ==================== UTILITIES ====================
@@ -696,7 +755,6 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
     const botUsername = response.data.result.username.replace(/^@/, '');
 
-    // Clean up old webhook if changing to different bot
     if (req.user.telegramBotToken && req.user.telegramBotToken !== token) {
       try {
         const oldBot = new Telegraf(req.user.telegramBotToken);
@@ -1643,12 +1701,9 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FINAL VERSION WITH ALL REQUESTED FEATURES');
-  console.log('✅ One bot token per account enforced');
-  console.log('✅ Contact field only accepts valid email or phone number');
-  console.log('✅ Proper webhook cleanup when changing bot token');
-  console.log('✅ Scheduled broadcasts run in parallel (up to 4 at once)');
-  console.log('✅ Scheduler checks every 10 seconds');
-  console.log('✅ Batch delay reduced to 8 seconds');
+  console.log('\nSENDEM SERVER — FINAL VERSION WITH RATE LIMIT PROTECTION');
+  console.log('✅ Aggressive webhook rate limit avoidance implemented');
+  console.log('✅ Using string concatenation for all URLs');
+  console.log('✅ webhookReply = false to prevent "Bot is not running!"');
   console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
