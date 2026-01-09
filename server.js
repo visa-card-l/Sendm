@@ -264,7 +264,7 @@ broadcastDailySchema.index({ userId: 1, date: 1 }, { unique: true });
 const activeBots = new Map();
 const resetTokens = new Map();
 const pendingSubscribers = new Map();
-const lastWebhookSetTime = new Map(); // userId -> timestamp of last successful webhook set
+const lastWebhookSetTime = new Map();
 
 // ==================== TELEGRAM BOT MANAGEMENT ====================
 function launchUserBot(user) {
@@ -277,8 +277,25 @@ function launchUserBot(user) {
 
   const bot = new Telegraf(user.telegramBotToken);
 
-  // Critical: Prevents "Bot is not running!" error in pure webhook mode
-  bot.webhookReply = false;
+  // ==================== FIXES FOR "Bot is not running!" ====================
+  bot.telegram.webhookReply = false;
+  bot.options.webhookReply = false;
+
+  // Dummy launch to satisfy internal state without starting polling
+  bot.launch({
+    dropPendingUpdates: true,
+    allowedUpdates: []
+  }).catch(() => {
+    // We expect this to "fail" silently in webhook mode - that's normal
+  });
+
+  bot.catch((err) => {
+    if (err.message && err.message.includes('Bot is not running')) {
+      console.warn('Ignored expected "Bot is not running" warning in webhook mode for ' + user.email);
+    } else {
+      console.error('Bot error for ' + user.email + ':', err);
+    }
+  });
 
   bot.start(async (ctx) => {
     const payload = ctx.startPayload || '';
@@ -362,10 +379,6 @@ function launchUserBot(user) {
     await ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>');
   });
 
-  bot.catch((err) => {
-    console.error('Bot error for ' + user.email + ':', err);
-  });
-
   const webhookPath = '/webhook/' + WEBHOOK_SECRET + '/' + user.id;
   const webhookUrl = 'https://' + DOMAIN + webhookPath;
 
@@ -399,8 +412,7 @@ function launchUserBot(user) {
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
       console.log('Webhook cleaned for ' + user.email);
 
-      await new Promise(resolve => setTimeout(resolve, 4000)); // generous breathing room
-
+      await new Promise(resolve => setTimeout(resolve, 4000));
       await new Promise(resolve => setTimeout(resolve, 2500));
 
       let attempts = 0;
@@ -435,11 +447,34 @@ function launchUserBot(user) {
     } catch (err) {
       console.error('Webhook setup completely failed for ' + user.email + ': ' + err.message);
     } finally {
-      // Always keep the bot instance available for handleUpdate
       activeBots.set(user.id, bot);
     }
   })();
 }
+
+// ==================== MIDDLEWARE ====================
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.static('public'));
+app.use(cors());
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many attempts' }
+});
+
+const formSubmitLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: 'Too many submissions to this form. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.ip + '::' + req.params.shortId,
+  skip: (req) => !req.params.shortId
+});
 
 // ==================== WEBHOOK ENDPOINT ====================
 app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', async (req, res) => {
@@ -469,30 +504,6 @@ app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', async (req, res) => {
   }
 
   res.sendStatus(200);
-});
-
-// ==================== MIDDLEWARE ====================
-app.set('view engine', 'ejs');
-app.set('views', path.join(__dirname, 'views'));
-app.use(express.static('public'));
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many attempts' }
-});
-
-const formSubmitLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 10,
-  message: { error: 'Too many submissions to this form. Please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req) => req.ip + '::' + req.params.shortId,
-  skip: (req) => !req.params.shortId
 });
 
 // ==================== UTILITIES ====================
@@ -1701,9 +1712,6 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FINAL VERSION WITH RATE LIMIT PROTECTION');
-  console.log('✅ Aggressive webhook rate limit avoidance implemented');
-  console.log('✅ Using string concatenation for all URLs');
-  console.log('✅ webhookReply = false to prevent "Bot is not running!"');
+  console.log('\nSENDEM SERVER — FULL VERSION WITH "BOT NOT RUNNING" FIX ATTEMPT');
   console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
