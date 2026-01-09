@@ -14,7 +14,8 @@ const crypto = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.set('trust proxy', 3);  
+app.set('trust proxy', 3);
+
 // ==================== CONFIG & SECRETS ====================
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_weak_secret_change_me_immediately';
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY || 'sk_test_fallback_change_me';
@@ -48,26 +49,23 @@ const MONTHLY_PRICE_KOBO = 500000; // ₦5,000 in kobo
 
 // Batching config
 const BATCH_SIZE = 25;
-const BATCH_INTERVAL_MS = 8000; // Reduced from 15000 → faster individual broadcasts
+const BATCH_INTERVAL_MS = 8000;
 const MAX_MSG_LENGTH = 4000;
 
 // ==================== CONTACT VALIDATION REGEX ====================
-// Accepts valid emails OR phone numbers (international or local, with optional +)
 const CONTACT_REGEX = /^(\+?[0-9\s\-\(\)]{7,20}|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$/;
 
 // ==================== PER-USER & PUBLIC CACHE WITH TTL ====================
-const userCache = new Map();     // userId → cache bucket
-const publicCache = new Map();   // key like 'landing:abc123' → { data, timestamp }
+const userCache = new Map();
+const publicCache = new Map();
 
-// TTL settings (in milliseconds)
 const TTL = {
-  pages: 5 * 60 * 1000,        // 5 minutes
-  forms: 5 * 60 * 1000,        // 5 minutes
-  contacts: 2 * 60 * 1000,     // 2 minutes
-  public: 10 * 60 * 1000       // 10 minutes for public pages/forms
+  pages: 5 * 60 * 1000,
+  forms: 5 * 60 * 1000,
+  contacts: 2 * 60 * 1000,
+  public: 10 * 60 * 1000
 };
 
-// Get or create per-user cache bucket
 function getUserCache(userId) {
   let bucket = userCache.get(userId);
   if (!bucket) {
@@ -87,7 +85,6 @@ function getUserCache(userId) {
   return bucket;
 }
 
-// Invalidate specific user cache
 function invalidateUserCache(userId, type = 'all') {
   const bucket = userCache.get(userId);
   if (!bucket) return;
@@ -107,24 +104,20 @@ function invalidateUserCache(userId, type = 'all') {
   bucket.lastAccess = Date.now();
 }
 
-// Invalidate public cache entry
 function invalidatePublicCache(key) {
   publicCache.delete(key);
 }
 
-// Auto cleanup every 10 minutes
 setInterval(() => {
   const now = Date.now();
-  const INACTIVE_THRESHOLD = 30 * 60 * 1000; // 30 min
+  const INACTIVE_THRESHOLD = 30 * 60 * 1000;
 
-  // Clean public cache
   for (const [key, val] of publicCache.entries()) {
     if (now - val.timestamp > TTL.public) {
       publicCache.delete(key);
     }
   }
 
-  // Clean inactive users
   for (const [userId, bucket] of userCache.entries()) {
     if (now - bucket.lastAccess > INACTIVE_THRESHOLD) {
       userCache.delete(userId);
@@ -172,7 +165,6 @@ const userSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 
-// Index for fast bot token uniqueness check
 userSchema.index({ telegramBotToken: 1 });
 
 const landingPageSchema = new mongoose.Schema({
@@ -273,19 +265,121 @@ const activeBots = new Map();
 const resetTokens = new Map();
 const pendingSubscribers = new Map();
 
-// ==================== LOAD ADMIN SETTINGS ON STARTUP ====================
-async function loadAdminSettings() {
-  try {
-    const settings = await AdminSettings.getSettings();
-    adminSettingsCache = {
-      dailyBroadcastLimit: settings.dailyBroadcastLimit,
-      maxLandingPages: settings.maxLandingPages,
-      maxForms: settings.maxForms
-    };
-    console.log('✅ Admin settings loaded from DB:', adminSettingsCache);
-  } catch (err) {
-    console.error('Failed to load admin settings:', err);
+// ==================== TELEGRAM BOT MANAGEMENT ====================
+function launchUserBot(user) {
+  if (activeBots.has(user.id)) {
+    activeBots.get(user.id).stop('Replaced');
+    activeBots.delete(user.id);
   }
+
+  if (!user.telegramBotToken) return;
+
+  const bot = new Telegraf(user.telegramBotToken);
+
+  bot.start(async (ctx) => {
+    const payload = ctx.startPayload || '';
+    const chatId = ctx.chat.id.toString();
+
+    if (payload.startsWith('sub_') && pendingSubscribers.has(payload)) {
+      const sub = pendingSubscribers.get(payload);
+      if (sub.userId === user.id) {
+        let targetContact = await Contact.findOne({
+          userId: user.id,
+          telegramChatId: chatId
+        });
+
+        const contactsByEmail = await Contact.find({ userId: user.id, contact: sub.contact });
+
+        if (!targetContact) {
+          targetContact = contactsByEmail.find(c => c.status === 'subscribed') ||
+                          contactsByEmail.find(c => c.shortId === sub.shortId) ||
+                          contactsByEmail[0];
+        }
+
+        if (!targetContact) {
+          targetContact = new Contact({
+            userId: user.id,
+            shortId: sub.shortId,
+            name: sub.name,
+            contact: sub.contact,
+            telegramChatId: chatId,
+            status: 'subscribed',
+            submittedAt: new Date(),
+            subscribedAt: new Date()
+          });
+        } else {
+          targetContact.name = sub.name;
+          targetContact.contact = sub.contact;
+          targetContact.shortId = sub.shortId;
+          targetContact.telegramChatId = chatId;
+          targetContact.status = 'subscribed';
+          targetContact.subscribedAt = targetContact.subscribedAt || new Date();
+          targetContact.submittedAt = new Date();
+        }
+
+        await targetContact.save();
+
+        await Contact.deleteMany({
+          userId: user.id,
+          $or: [
+            { contact: sub.contact, _id: { $ne: targetContact._id } },
+            { telegramChatId: chatId, _id: { $ne: targetContact._id } }
+          ]
+        });
+
+        pendingSubscribers.delete(payload);
+
+        const form = await FormPage.findOne({ shortId: sub.shortId });
+        let welcomeText = '<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you';
+
+        if (form && form.welcomeMessage && form.welcomeMessage.trim()) {
+          welcomeText = form.welcomeMessage
+            .replace(/\{name\}/gi, '<b>' + escapeHtml(sub.name) + '</b>')
+            .replace(/\{contact\}/gi, escapeHtml(sub.contact));
+        }
+
+        await ctx.replyWithHTML(welcomeText);
+        return;
+      }
+    }
+
+    if (payload === user.id) {
+      user.telegramChatId = chatId;
+      user.isTelegramConnected = true;
+      await user.save();
+      await ctx.replyWithHTML('<b>Sendm 2FA Connected Successfully!</b>\n\nYou will receive login codes here.');
+      return;
+    }
+
+    await ctx.replyWithHTML('<b>Welcome!</b>\n\nSubscribe from the page to get updates.');
+  });
+
+  bot.command('status', async (ctx) => {
+    await ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>');
+  });
+
+  bot.catch((err) => {
+    console.error('Bot error for ' + user.email + ':', err);
+  });
+
+  const webhookUrl = `https://\( {DOMAIN}/webhook/ \){WEBHOOK_SECRET}/${user.id}`;
+
+  (async () => {
+    try {
+      await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+      console.log(`Webhook cleaned for ${user.email}`);
+      const success = await bot.telegram.setWebhook(webhookUrl);
+      if (success) {
+        console.log(`Webhook set successfully for @\( {user.botUsername || 'unknown'} → \){webhookUrl}`);
+      } else {
+        console.error(`Failed to set webhook for ${user.email}`);
+      }
+    } catch (err) {
+      console.error(`Webhook setup error for ${user.email}:`, err.message);
+    }
+  })();
+
+  activeBots.set(user.id, bot);
 }
 
 // ==================== MIDDLEWARE ====================
@@ -462,270 +556,6 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// ==================== TELEGRAM BOT - PURE WEBHOOK MODE ====================
-function launchUserBot(user) {
-  if (activeBots.has(user.id)) {
-    activeBots.get(user.id).stop('Replaced');
-    activeBots.delete(user.id);
-  }
-
-  if (!user.telegramBotToken) return;
-
-  const bot = new Telegraf(user.telegramBotToken);
-
-  bot.start(async (ctx) => {
-    const payload = ctx.startPayload || '';
-    const chatId = ctx.chat.id.toString();
-
-    if (payload.startsWith('sub_') && pendingSubscribers.has(payload)) {
-      const sub = pendingSubscribers.get(payload);
-      if (sub.userId === user.id) {
-        let targetContact = await Contact.findOne({
-          userId: user.id,
-          telegramChatId: chatId
-        });
-
-        const contactsByEmail = await Contact.find({ userId: user.id, contact: sub.contact });
-
-        if (!targetContact) {
-          targetContact = contactsByEmail.find(c => c.status === 'subscribed') ||
-                          contactsByEmail.find(c => c.shortId === sub.shortId) ||
-                          contactsByEmail[0];
-        }
-
-        if (!targetContact) {
-          targetContact = new Contact({
-            userId: user.id,
-            shortId: sub.shortId,
-            name: sub.name,
-            contact: sub.contact,
-            telegramChatId: chatId,
-            status: 'subscribed',
-            submittedAt: new Date(),
-            subscribedAt: new Date()
-          });
-        } else {
-          targetContact.name = sub.name;
-          targetContact.contact = sub.contact;
-          targetContact.shortId = sub.shortId;
-          targetContact.telegramChatId = chatId;
-          targetContact.status = 'subscribed';
-          targetContact.subscribedAt = targetContact.subscribedAt || new Date();
-          targetContact.submittedAt = new Date();
-        }
-
-        await targetContact.save();
-
-        await Contact.deleteMany({
-          userId: user.id,
-          $or: [
-            { contact: sub.contact, _id: { $ne: targetContact._id } },
-            { telegramChatId: chatId, _id: { $ne: targetContact._id } }
-          ]
-        });
-
-        pendingSubscribers.delete(payload);
-
-        const form = await FormPage.findOne({ shortId: sub.shortId });
-        let welcomeText = '<b>Subscription Confirmed!</b>\n\nHi <b>' + escapeHtml(sub.name) + '</b>!\n\nYou\'re now subscribed.\n\nThank you';
-
-        if (form && form.welcomeMessage && form.welcomeMessage.trim()) {
-          welcomeText = form.welcomeMessage
-            .replace(/\{name\}/gi, '<b>' + escapeHtml(sub.name) + '</b>')
-            .replace(/\{contact\}/gi, escapeHtml(sub.contact));
-        }
-
-        await ctx.replyWithHTML(welcomeText);
-        return;
-      }
-    }
-
-    if (payload === user.id) {
-      user.telegramChatId = chatId;
-      user.isTelegramConnected = true;
-      await user.save();
-      await ctx.replyWithHTML('<b>Sendm 2FA Connected Successfully!</b>\n\nYou will receive login codes here.');
-      return;
-    }
-
-    await ctx.replyWithHTML('<b>Welcome!</b>\n\nSubscribe from the page to get updates.');
-  });
-
-  bot.command('status', async (ctx) => {
-    await ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>');
-  });
-
-  bot.catch((err) => {
-    console.error('Bot error for ' + user.email + ':', err);
-  });
-
-  const webhookUrl = 'https://' + DOMAIN + '/webhook/' + WEBHOOK_SECRET + '/' + user.id;
-
-  (async () => {
-    try {
-      await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-      const success = await bot.telegram.setWebhook(webhookUrl);
-      if (success) {
-        console.log('Webhook set successfully for @' + (user.botUsername || 'unknown') + ' → ' + webhookUrl);
-      } else {
-        console.error('Failed to set webhook for @' + user.botUsername);
-      }
-    } catch (err) {
-      console.error('Webhook setup error for ' + user.email + ':', err.message);
-    }
-  })();
-
-  activeBots.set(user.id, bot);
-}
-
-// ==================== CACHED HIGH-READ ENDPOINTS ====================
-
-// Public Landing Page
-app.get('/p/:shortId', async (req, res) => {
-  const key = 'landing:' + req.params.shortId;
-  const cached = publicCache.get(key);
-
-  if (cached && Date.now() - cached.timestamp < TTL.public) {
-    return res.render('landing', cached.data);
-  }
-
-  const page = await LandingPage.findOne({ shortId: req.params.shortId });
-  if (!page) return res.status(404).render('404');
-
-  const data = { title: page.title, blocks: page.config.blocks };
-  publicCache.set(key, { data: data, timestamp: Date.now() });
-  res.render('landing', data);
-});
-
-// Public Form Page
-app.get('/f/:shortId', async (req, res) => {
-  const key = 'form:' + req.params.shortId;
-  const cached = publicCache.get(key);
-
-  if (cached && Date.now() - cached.timestamp < TTL.public) {
-    return res.render('form', cached.data);
-  }
-
-  const form = await FormPage.findOne({ shortId: req.params.shortId });
-  if (!form) return res.status(404).render('404');
-
-  const data = { title: form.title, state: form.state };
-  publicCache.set(key, { data: data, timestamp: Date.now() });
-  res.render('form', data);
-});
-
-// User's Pages List
-app.get('/api/pages', authenticateToken, async (req, res) => {
-  const bucket = getUserCache(req.user.id);
-  const now = Date.now();
-
-  if (bucket.pages && now - bucket.pagesTs < TTL.pages) {
-    return res.json({ pages: bucket.pages });
-  }
-
-  const pages = await LandingPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
-  const host = req.get('host');
-  const protocol = req.protocol;
-  const formatted = pages.map(p => ({
-    shortId: p.shortId,
-    title: p.title,
-    createdAt: p.createdAt,
-    updatedAt: p.updatedAt,
-    url: protocol + '://' + host + '/p/' + p.shortId
-  }));
-
-  bucket.pages = formatted;
-  bucket.pagesTs = now;
-  res.json({ pages: formatted });
-});
-
-// User's Forms List
-app.get('/api/forms', authenticateToken, async (req, res) => {
-  const bucket = getUserCache(req.user.id);
-  const now = Date.now();
-
-  if (bucket.forms && now - bucket.formsTs < TTL.forms) {
-    return res.json({ forms: bucket.forms });
-  }
-
-  const forms = await FormPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
-  const host = req.get('host');
-  const protocol = req.protocol;
-  const formatted = forms.map(f => ({
-    shortId: f.shortId,
-    title: f.title,
-    createdAt: f.createdAt,
-    updatedAt: f.updatedAt,
-    url: protocol + '://' + host + '/f/' + f.shortId
-  }));
-
-  bucket.forms = formatted;
-  bucket.formsTs = now;
-  res.json({ forms: formatted });
-});
-
-// User's Contacts List
-app.get('/api/contacts', authenticateToken, async (req, res) => {
-  const bucket = getUserCache(req.user.id);
-  const now = Date.now();
-
-  if (bucket.contacts && now - bucket.contactsTs < TTL.contacts) {
-    return res.json({ success: true, contacts: bucket.contacts });
-  }
-
-  const contacts = await Contact.find({ userId: req.user.id }).sort({ submittedAt: -1 });
-  const formatted = contacts.map(c => ({
-    name: c.name,
-    contact: c.contact,
-    status: c.status,
-    telegramChatId: c.telegramChatId || null,
-    pageId: c.shortId,
-    submittedAt: new Date(c.submittedAt).toLocaleString(),
-    subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
-  }));
-
-  bucket.contacts = formatted;
-  bucket.contactsTs = now;
-  res.json({ success: true, contacts: formatted });
-});
-
-// Single Page API (public)
-app.get('/api/page/:shortId', async (req, res) => {
-  const key = 'apiPage:' + req.params.shortId;
-  const cached = publicCache.get(key);
-  if (cached && Date.now() - cached.timestamp < TTL.public) {
-    return res.json(cached.data);
-  }
-
-  const page = await LandingPage.findOne({ shortId: req.params.shortId });
-  if (!page) return res.status(404).json({ error: 'Page not found' });
-
-  const data = { shortId: page.shortId, title: page.title, config: page.config };
-  publicCache.set(key, { data: data, timestamp: Date.now() });
-  res.json(data);
-});
-
-// Single Form API (public)
-app.get('/api/form/:shortId', async (req, res) => {
-  const key = 'apiForm:' + req.params.shortId;
-  const cached = publicCache.get(key);
-  if (cached && Date.now() - cached.timestamp < TTL.public) {
-    return res.json(cached.data);
-  }
-
-  const form = await FormPage.findOne({ shortId: req.params.shortId });
-  if (!form) return res.status(404).json({ error: 'Form not found' });
-
-  const data = {
-    shortId: form.shortId,
-    title: form.title,
-    state: form.state,
-    welcomeMessage: form.welcomeMessage
-  };
-  publicCache.set(key, { data: data, timestamp: Date.now() });
-  res.json(data);
-});
-
 // ==================== AUTH ROUTES ====================
 app.post('/api/auth/register', authLimiter, async (req, res) => {
   const { fullName, email, password } = req.body;
@@ -784,7 +614,6 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
   const token = botToken.trim();
 
-  // Prevent one bot being linked to multiple accounts
   const existingUser = await User.findOne({ telegramBotToken: token });
   if (existingUser && existingUser.id !== req.user.id) {
     return res.status(400).json({ error: 'This bot is already linked to another account.' });
@@ -817,7 +646,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
     launchUserBot(req.user);
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + req.user.id;
+    const startLink = `https://t.me/\( {botUsername}?start= \){req.user.id}`;
 
     res.json({
       success: true,
@@ -843,7 +672,6 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
   const token = newBotToken.trim();
 
-  // Prevent one bot being linked to multiple accounts
   const existingUser = await User.findOne({ telegramBotToken: token });
   if (existingUser && existingUser.id !== req.user.id) {
     return res.status(400).json({ error: 'This bot is already linked to another account.' });
@@ -868,6 +696,17 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
     const botUsername = response.data.result.username.replace(/^@/, '');
 
+    // Clean up old webhook if changing to different bot
+    if (req.user.telegramBotToken && req.user.telegramBotToken !== token) {
+      try {
+        const oldBot = new Telegraf(req.user.telegramBotToken);
+        await oldBot.telegram.deleteWebhook({ drop_pending_updates: true });
+        console.log(`Old webhook deleted successfully for user ${req.user.id}`);
+      } catch (err) {
+        console.warn(`Failed to delete old webhook (possibly invalid old token): ${err.message}`);
+      }
+    }
+
     req.user.telegramBotToken = token;
     req.user.botUsername = botUsername;
     req.user.isTelegramConnected = false;
@@ -876,11 +715,11 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
     launchUserBot(req.user);
 
-    const startLink = 'https://t.me/' + botUsername + '?start=' + req.user.id;
+    const startLink = `https://t.me/\( {botUsername}?start= \){req.user.id}`;
 
     res.json({
       success: true,
-      message: 'Bot token updated!',
+      message: 'Bot token updated! Please send /start to the new bot to reconnect 2FA.',
       botUsername: '@' + botUsername,
       startLink
     });
@@ -1081,7 +920,148 @@ app.get('/subscription-success', (req, res) => {
   res.send('<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Payment Successful</title>\n  <style>\n    body{font-family:system-ui,sans-serif;background:#0a0a0a;color:#00ff41;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}\n    .box{background:#111;padding:60px;border-radius:20px;text-align:center;box-shadow:0 0 30px rgba(0,255,65,0.2);}\n    h1{margin:0 0 20px;font-size:3em;color:#00ff41;}\n    p{font-size:1.3em;margin:20px 0;line-height:1.6;}\n    a{display:inline-block;margin-top:30px;padding:14px 32px;background:#00ff41;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;font-size:1.1em;}\n    a:hover{background:#00cc33;}\n  </style>\n</head>\n<body>\n  <div class="box">\n    <h1>✓ Payment Successful!</h1>\n    <p>Your subscription is now <strong>active</strong>.</p>\n    <p>You have unlimited broadcasts, landing pages, and forms.</p>\n    <p><a href="/">← Return to Dashboard</a></p>\n  </div>\n</body>\n</html>');
 });
 
-// ==================== LANDING PAGES WRITE ROUTES WITH INVALIDATION ====================
+// ==================== CACHED HIGH-READ ENDPOINTS ====================
+
+app.get('/p/:shortId', async (req, res) => {
+  const key = 'landing:' + req.params.shortId;
+  const cached = publicCache.get(key);
+
+  if (cached && Date.now() - cached.timestamp < TTL.public) {
+    return res.render('landing', cached.data);
+  }
+
+  const page = await LandingPage.findOne({ shortId: req.params.shortId });
+  if (!page) return res.status(404).render('404');
+
+  const data = { title: page.title, blocks: page.config.blocks };
+  publicCache.set(key, { data: data, timestamp: Date.now() });
+  res.render('landing', data);
+});
+
+app.get('/f/:shortId', async (req, res) => {
+  const key = 'form:' + req.params.shortId;
+  const cached = publicCache.get(key);
+
+  if (cached && Date.now() - cached.timestamp < TTL.public) {
+    return res.render('form', cached.data);
+  }
+
+  const form = await FormPage.findOne({ shortId: req.params.shortId });
+  if (!form) return res.status(404).render('404');
+
+  const data = { title: form.title, state: form.state };
+  publicCache.set(key, { data: data, timestamp: Date.now() });
+  res.render('form', data);
+});
+
+app.get('/api/pages', authenticateToken, async (req, res) => {
+  const bucket = getUserCache(req.user.id);
+  const now = Date.now();
+
+  if (bucket.pages && now - bucket.pagesTs < TTL.pages) {
+    return res.json({ pages: bucket.pages });
+  }
+
+  const pages = await LandingPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
+  const host = req.get('host');
+  const protocol = req.protocol;
+  const formatted = pages.map(p => ({
+    shortId: p.shortId,
+    title: p.title,
+    createdAt: p.createdAt,
+    updatedAt: p.updatedAt,
+    url: protocol + '://' + host + '/p/' + p.shortId
+  }));
+
+  bucket.pages = formatted;
+  bucket.pagesTs = now;
+  res.json({ pages: formatted });
+});
+
+app.get('/api/forms', authenticateToken, async (req, res) => {
+  const bucket = getUserCache(req.user.id);
+  const now = Date.now();
+
+  if (bucket.forms && now - bucket.formsTs < TTL.forms) {
+    return res.json({ forms: bucket.forms });
+  }
+
+  const forms = await FormPage.find({ userId: req.user.id }).sort({ updatedAt: -1 });
+  const host = req.get('host');
+  const protocol = req.protocol;
+  const formatted = forms.map(f => ({
+    shortId: f.shortId,
+    title: f.title,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+    url: protocol + '://' + host + '/f/' + f.shortId
+  }));
+
+  bucket.forms = formatted;
+  bucket.formsTs = now;
+  res.json({ forms: formatted });
+});
+
+app.get('/api/contacts', authenticateToken, async (req, res) => {
+  const bucket = getUserCache(req.user.id);
+  const now = Date.now();
+
+  if (bucket.contacts && now - bucket.contactsTs < TTL.contacts) {
+    return res.json({ success: true, contacts: bucket.contacts });
+  }
+
+  const contacts = await Contact.find({ userId: req.user.id }).sort({ submittedAt: -1 });
+  const formatted = contacts.map(c => ({
+    name: c.name,
+    contact: c.contact,
+    status: c.status,
+    telegramChatId: c.telegramChatId || null,
+    pageId: c.shortId,
+    submittedAt: new Date(c.submittedAt).toLocaleString(),
+    subscribedAt: c.subscribedAt ? new Date(c.subscribedAt).toLocaleString() : null
+  }));
+
+  bucket.contacts = formatted;
+  bucket.contactsTs = now;
+  res.json({ success: true, contacts: formatted });
+});
+
+app.get('/api/page/:shortId', async (req, res) => {
+  const key = 'apiPage:' + req.params.shortId;
+  const cached = publicCache.get(key);
+  if (cached && Date.now() - cached.timestamp < TTL.public) {
+    return res.json(cached.data);
+  }
+
+  const page = await LandingPage.findOne({ shortId: req.params.shortId });
+  if (!page) return res.status(404).json({ error: 'Page not found' });
+
+  const data = { shortId: page.shortId, title: page.title, config: page.config };
+  publicCache.set(key, { data: data, timestamp: Date.now() });
+  res.json(data);
+});
+
+app.get('/api/form/:shortId', async (req, res) => {
+  const key = 'apiForm:' + req.params.shortId;
+  const cached = publicCache.get(key);
+  if (cached && Date.now() - cached.timestamp < TTL.public) {
+    return res.json(cached.data);
+  }
+
+  const form = await FormPage.findOne({ shortId: req.params.shortId });
+  if (!form) return res.status(404).json({ error: 'Form not found' });
+
+  const data = {
+    shortId: form.shortId,
+    title: form.title,
+    state: form.state,
+    welcomeMessage: form.welcomeMessage
+  };
+  publicCache.set(key, { data: data, timestamp: Date.now() });
+  res.json(data);
+});
+
+// ==================== LANDING PAGES WRITE ROUTES ====================
 app.post('/api/pages/save', authenticateToken, async (req, res) => {
   const { shortId, title, config } = req.body;
   if (!title || !config || !Array.isArray(config.blocks)) return res.status(400).json({ error: 'Title and config.blocks required' });
@@ -1142,7 +1122,7 @@ app.post('/api/pages/delete', authenticateToken, async (req, res) => {
   res.json({ success: true });
 });
 
-// ==================== FORMS WRITE ROUTES WITH INVALIDATION ====================
+// ==================== FORMS WRITE ROUTES ====================
 app.post('/api/forms/save', authenticateToken, async (req, res) => {
   const { shortId, title, state, welcomeMessage } = req.body;
   if (!title || !state) return res.status(400).json({ error: 'Title and state required' });
@@ -1213,7 +1193,6 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
 
   const contactValue = email.trim();
 
-  // Validate contact: must be valid email OR phone number
   if (!CONTACT_REGEX.test(contactValue)) {
     return res.status(400).json({ error: 'Contact must be a valid email address or phone number' });
   }
@@ -1339,7 +1318,7 @@ async function executeBroadcast(userId, message) {
   return { sent, failed, total: targets.length };
 }
 
-// ==================== SCHEDULER - PARALLEL EXECUTION ====================
+// ==================== SCHEDULER ====================
 setInterval(async () => {
   const now = new Date();
   const due = await ScheduledBroadcast.find({ 
@@ -1349,7 +1328,7 @@ setInterval(async () => {
 
   if (due.length === 0) return;
 
-  const concurrency = 4; // Max 4 broadcasts running at the same time — safe and fast
+  const concurrency = 4;
   const running = new Set();
 
   for (const task of due) {
@@ -1398,7 +1377,7 @@ setInterval(async () => {
   if (running.size > 0) {
     await Promise.all([...running]);
   }
-}, 10000); // Check every 10 seconds for precise timing
+}, 10000);
 
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message } = req.body;
@@ -1618,7 +1597,7 @@ app.post('/admin-limits', async (req, res) => {
   }
 });
 
-// ==================== CLEANUP & STARTUP ====================
+// ==================== CLEANUP ====================
 setInterval(() => {
   const now = Date.now();
   const keys = Array.from(pendingSubscribers.keys());
@@ -1629,6 +1608,21 @@ setInterval(() => {
     }
   }
 }, 60 * 60 * 1000);
+
+// ==================== STARTUP ====================
+async function loadAdminSettings() {
+  try {
+    const settings = await AdminSettings.getSettings();
+    adminSettingsCache = {
+      dailyBroadcastLimit: settings.dailyBroadcastLimit,
+      maxLandingPages: settings.maxLandingPages,
+      maxForms: settings.maxForms
+    };
+    console.log('✅ Admin settings loaded from DB:', adminSettingsCache);
+  } catch (err) {
+    console.error('Failed to load admin settings:', err);
+  }
+}
 
 mongoose.connection.once('open', async () => {
   await loadAdminSettings();
@@ -1652,9 +1646,9 @@ app.listen(PORT, () => {
   console.log('\nSENDEM SERVER — FINAL VERSION WITH ALL REQUESTED FEATURES');
   console.log('✅ One bot token per account enforced');
   console.log('✅ Contact field only accepts valid email or phone number');
-  console.log('✅ All original functionality preserved');
-  console.log('✅ Scheduled broadcasts now run in parallel (up to 4 at once)');
-  console.log('✅ Scheduler checks every 10 seconds (precise timing)');
-  console.log('✅ Batch delay reduced to 8 seconds (faster sending)');
+  console.log('✅ Proper webhook cleanup when changing bot token');
+  console.log('✅ Scheduled broadcasts run in parallel (up to 4 at once)');
+  console.log('✅ Scheduler checks every 10 seconds');
+  console.log('✅ Batch delay reduced to 8 seconds');
   console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
