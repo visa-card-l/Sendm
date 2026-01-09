@@ -362,20 +362,20 @@ function launchUserBot(user) {
     console.error('Bot error for ' + user.email + ':', err);
   });
 
-  const webhookUrl = `https://\( {DOMAIN}/webhook/ \){WEBHOOK_SECRET}/${user.id}`;
+  const webhookUrl = 'https://' + DOMAIN + '/webhook/' + WEBHOOK_SECRET + '/' + user.id;
 
   (async () => {
     try {
       await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-      console.log(`Webhook cleaned for ${user.email}`);
+      console.log('Webhook cleaned for ' + user.email);
       const success = await bot.telegram.setWebhook(webhookUrl);
       if (success) {
-        console.log(`Webhook set successfully for @\( {user.botUsername || 'unknown'} → \){webhookUrl}`);
+        console.log('Webhook set successfully for @' + (user.botUsername || 'unknown') + ' → ' + webhookUrl);
       } else {
-        console.error(`Failed to set webhook for ${user.email}`);
+        console.error('Failed to set webhook for ' + user.email);
       }
     } catch (err) {
-      console.error(`Webhook setup error for ${user.email}:`, err.message);
+      console.error('Webhook setup error for ' + user.email + ':', err.message);
     }
   })();
 
@@ -620,7 +620,7 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   }
 
   try {
-    const response = await axios.get(`https://api.telegram.org/bot${token}/getMe`, {
+    const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe', {
       timeout: 10000
     });
 
@@ -646,13 +646,13 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
     launchUserBot(req.user);
 
-    const startLink = `https://t.me/\( {botUsername}?start= \){req.user.id}`;
+    const startLink = 'https://t.me/' + botUsername + '?start=' + req.user.id;
 
     res.json({
       success: true,
       message: 'Bot connected!',
       botUsername: '@' + botUsername,
-      startLink
+      startLink: startLink
     });
   } catch (err) {
     console.error('Telegram connect error:', err.message);
@@ -678,7 +678,7 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   }
 
   try {
-    const response = await axios.get(`https://api.telegram.org/bot${token}/getMe`, {
+    const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe', {
       timeout: 10000
     });
 
@@ -701,9 +701,9 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
       try {
         const oldBot = new Telegraf(req.user.telegramBotToken);
         await oldBot.telegram.deleteWebhook({ drop_pending_updates: true });
-        console.log(`Old webhook deleted successfully for user ${req.user.id}`);
+        console.log('Old webhook deleted successfully for user ' + req.user.id);
       } catch (err) {
-        console.warn(`Failed to delete old webhook (possibly invalid old token): ${err.message}`);
+        console.warn('Failed to delete old webhook (possibly invalid old token): ' + err.message);
       }
     }
 
@@ -715,13 +715,13 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
     launchUserBot(req.user);
 
-    const startLink = `https://t.me/\( {botUsername}?start= \){req.user.id}`;
+    const startLink = 'https://t.me/' + botUsername + '?start=' + req.user.id;
 
     res.json({
       success: true,
       message: 'Bot token updated! Please send /start to the new bot to reconnect 2FA.',
       botUsername: '@' + botUsername,
-      startLink
+      startLink: startLink
     });
   } catch (err) {
     console.error('Change bot token error:', err.message);
@@ -1223,7 +1223,7 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
       });
 
       const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
-      return res.json({ success: true, deepLink, alreadySubscribed: true });
+      return res.json({ success: true, deepLink: deepLink, alreadySubscribed: true });
     }
 
     contact.name = name.trim();
@@ -1250,7 +1250,7 @@ app.post('/api/subscribe/:shortId', formSubmitLimiter, async (req, res) => {
   });
 
   const deepLink = 'https://t.me/' + owner.botUsername + '?start=' + payload;
-  res.json({ success: true, deepLink });
+  res.json({ success: true, deepLink: deepLink });
 
   invalidateUserCache(owner.id, 'contacts');
 });
@@ -1360,7 +1360,7 @@ setInterval(async () => {
 
         await ScheduledBroadcast.deleteOne({ broadcastId: task.broadcastId });
       } catch (err) {
-        console.error(`Error processing scheduled broadcast \( {task.broadcastId} for user \){task.userId}:`, err);
+        console.error('Error processing scheduled broadcast ' + task.broadcastId + ' for user ' + task.userId + ':', err);
       } finally {
         running.delete(job);
       }
@@ -1481,58 +1481,58 @@ app.get('/admin-limits', async (req, res) => {
   const totalUsers = await User.countDocuments({});
   const payingUsers = await User.countDocuments({ isSubscribed: true, subscriptionEndDate: { $gt: new Date() } });
 
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Server Admin Panel</title>
-  <style>
-    body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 600px; }
-    h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }
-    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
-    .stat-box { background: #2d2d2d; padding: 20px; border-radius: 10px; text-align: center; }
-    .stat-number { font-size: 2.5em; font-weight: bold; color: #00ff41; margin: 10px 0; }
-    .stat-label { font-size: 1.1em; color: #aaa; }
-    label { display: block; margin: 20px 0 8px; font-size: 1.1em; }
-    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }
-    button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; margin-top: 20px; }
-    button:hover { background: #e6c200; }
-    .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Server Admin Panel</h1>
-    <div class="stats">
-      <div class="stat-box">
-        <div class="stat-number">${totalUsers}</div>
-        <div class="stat-label">Total Users</div>
-      </div>
-      <div class="stat-box">
-        <div class="stat-number">${payingUsers}</div>
-        <div class="stat-label">Paying Users</div>
-      </div>
-    </div>
-    <form method="POST">
-      <label>Owner Password</label>
-      <input type="password" name="password" required placeholder="Enter admin password">
-      <label>Daily Broadcasts per User (Free)</label>
-      <input type="number" name="daily_broadcast" min="1" value="${adminSettingsCache.dailyBroadcastLimit}" required>
-      <label>Max Landing Pages per User (Free)</label>
-      <input type="number" name="max_pages" min="1" value="${adminSettingsCache.maxLandingPages}" required>
-      <label>Max Forms per User (Free)</label>
-      <input type="number" name="max_forms" min="1" value="${adminSettingsCache.maxForms}" required>
-      <div class="current">
-        <strong>Current Free Tier Limits:</strong><br>
-        Broadcasts/day: \( {adminSettingsCache.dailyBroadcastLimit} | Pages: \){adminSettingsCache.maxLandingPages} | Forms: ${adminSettingsCache.maxForms}
-      </div>
-      <button type="submit">Update Limits</button>
-    </form>
-  </div>
-</body>
-</html>`;
+  const html = '<!DOCTYPE html>\n' +
+    '<html lang="en">\n' +
+    '<head>\n' +
+    '  <meta charset="UTF-8">\n' +
+    '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+    '  <title>Server Admin Panel</title>\n' +
+    '  <style>\n' +
+    '    body { font-family: \'Segoe UI\', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }\n' +
+    '    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.6); width: 90%; max-width: 600px; }\n' +
+    '    h1 { text-align: center; color: #ffd700; margin-bottom: 30px; }\n' +
+    '    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }\n' +
+    '    .stat-box { background: #2d2d2d; padding: 20px; border-radius: 10px; text-align: center; }\n' +
+    '    .stat-number { font-size: 2.5em; font-weight: bold; color: #00ff41; margin: 10px 0; }\n' +
+    '    .stat-label { font-size: 1.1em; color: #aaa; }\n' +
+    '    label { display: block; margin: 20px 0 8px; font-size: 1.1em; }\n' +
+    '    input[type="number"], input[type="password"] { width: 100%; padding: 12px; background: #2d2d2d; border: none; border-radius: 6px; color: white; font-size: 1em; margin-bottom: 15px; }\n' +
+    '    button { width: 100%; padding: 14px; background: #ffd700; color: black; font-weight: bold; border: none; border-radius: 6px; cursor: pointer; font-size: 1.1em; margin-top: 20px; }\n' +
+    '    button:hover { background: #e6c200; }\n' +
+    '    .current { text-align: center; margin: 25px 0; padding: 15px; background: #2d2d2d; border-radius: 8px; font-size: 1.1em; }\n' +
+    '  </style>\n' +
+    '</head>\n' +
+    '<body>\n' +
+    '  <div class="container">\n' +
+    '    <h1>Server Admin Panel</h1>\n' +
+    '    <div class="stats">\n' +
+    '      <div class="stat-box">\n' +
+    '        <div class="stat-number">' + totalUsers + '</div>\n' +
+    '        <div class="stat-label">Total Users</div>\n' +
+    '      </div>\n' +
+    '      <div class="stat-box">\n' +
+    '        <div class="stat-number">' + payingUsers + '</div>\n' +
+    '        <div class="stat-label">Paying Users</div>\n' +
+    '      </div>\n' +
+    '    </div>\n' +
+    '    <form method="POST">\n' +
+    '      <label>Owner Password</label>\n' +
+    '      <input type="password" name="password" required placeholder="Enter admin password">\n' +
+    '      <label>Daily Broadcasts per User (Free)</label>\n' +
+    '      <input type="number" name="daily_broadcast" min="1" value="' + adminSettingsCache.dailyBroadcastLimit + '" required>\n' +
+    '      <label>Max Landing Pages per User (Free)</label>\n' +
+    '      <input type="number" name="max_pages" min="1" value="' + adminSettingsCache.maxLandingPages + '" required>\n' +
+    '      <label>Max Forms per User (Free)</label>\n' +
+    '      <input type="number" name="max_forms" min="1" value="' + adminSettingsCache.maxForms + '" required>\n' +
+    '      <div class="current">\n' +
+    '        <strong>Current Free Tier Limits:</strong><br>\n' +
+    '        Broadcasts/day: ' + adminSettingsCache.dailyBroadcastLimit + ' | Pages: ' + adminSettingsCache.maxLandingPages + ' | Forms: ' + adminSettingsCache.maxForms + '\n' +
+    '      </div>\n' +
+    '      <button type="submit">Update Limits</button>\n' +
+    '    </form>\n' +
+    '  </div>\n' +
+    '</body>\n' +
+    '</html>';
   res.send(html);
 });
 
@@ -1566,31 +1566,31 @@ app.post('/admin-limits', async (req, res) => {
 
     console.log('Admin limits updated and saved to DB:', adminSettingsCache);
 
-    res.send(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Limits Updated</title>
-  <style>
-    body { font-family: 'Segoe UI', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }
-    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }
-    h1 { color: #4caf50; }
-    .success { font-size: 1.2em; margin: 20px 0; }
-    a { color: #ffd700; text-decoration: none; font-weight: bold; }
-    a:hover { text-decoration: underline; }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <h1>Success!</h1>
-    <p class="success">Server limits updated and <strong>saved permanently</strong>:</p>
-    <p><strong>Daily Broadcasts:</strong> ${newDaily}<br>
-       <strong>Max Pages:</strong> ${newPages}<br>
-       <strong>Max Forms:</strong> ${newForms}</p>
-    <p><a href="/admin-limits">← Back to Control Panel</a></p>
-  </div>
-</body>
-</html>`);
+    res.send('<!DOCTYPE html>\n' +
+      '<html lang="en">\n' +
+      '<head>\n' +
+      '  <meta charset="UTF-8">\n' +
+      '  <title>Limits Updated</title>\n' +
+      '  <style>\n' +
+      '    body { font-family: \'Segoe UI\', sans-serif; background: #121212; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; }\n' +
+      '    .container { background: #1e1e1e; padding: 40px; border-radius: 12px; text-align: center; }\n' +
+      '    h1 { color: #4caf50; }\n' +
+      '    .success { font-size: 1.2em; margin: 20px 0; }\n' +
+      '    a { color: #ffd700; text-decoration: none; font-weight: bold; }\n' +
+      '    a:hover { text-decoration: underline; }\n' +
+      '  </style>\n' +
+      '</head>\n' +
+      '<body>\n' +
+      '  <div class="container">\n' +
+      '    <h1>Success!</h1>\n' +
+      '    <p class="success">Server limits updated and <strong>saved permanently</strong>:</p>\n' +
+      '    <p><strong>Daily Broadcasts:</strong> ' + newDaily + '<br>\n' +
+      '       <strong>Max Pages:</strong> ' + newPages + '<br>\n' +
+      '       <strong>Max Forms:</strong> ' + newForms + '</p>\n' +
+      '    <p><a href="/admin-limits">← Back to Control Panel</a></p>\n' +
+      '  </div>\n' +
+      '</body>\n' +
+      '</html>');
   } catch (err) {
     console.error('Failed to save admin settings:', err);
     res.status(500).send('Failed to save settings');
