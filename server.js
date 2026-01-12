@@ -12,7 +12,7 @@ const mongoose = require('mongoose');
 const axios = require('axios');
 const crypto = require('crypto');
 const IORedis = require('ioredis');
-const { Queue, Worker, QueueScheduler } = require('bullmq');
+const bullmq = require('bullmq');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
