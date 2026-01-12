@@ -12,7 +12,7 @@ const mongoose = require('mongoose');
 const axios = require('axios');
 const crypto = require('crypto');
 const IORedis = require('ioredis');
-const bullmq = require('bullmq');
+const { Queue, Worker } = require('bullmq');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -64,7 +64,6 @@ if (!process.env.REDIS_URL) {
 }
 
 const broadcastQueue = new Queue('telegram-broadcasts', { connection: redisConnection });
-new QueueScheduler('telegram-broadcasts', { connection: redisConnection });
 
 // ==================== CONTACT VALIDATION REGEX ====================
 const CONTACT_REGEX = /^(\+?[0-9\s\-\(\)]{7,20}|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$/;
@@ -681,8 +680,8 @@ async function processBroadcast(job) {
     reportText += 'No subscribed contacts with Telegram connected.';
   } else {
     const emoji = failed === 0 ? '✅' : '⚠️';
-    reportText += `\( {emoji} <b> \){sent} of ${total}</b> delivered.\n`;
-    if (failed > 0) reportText += `${failed} failed.`;
+    reportText += '(' + emoji + ' <b>' + sent + ' of ' + total + '</b> delivered.\n';
+    if (failed > 0) reportText += failed + ' failed.';
   }
   reportText += '\n\nTime: ' + new Date().toLocaleString();
 
@@ -707,11 +706,11 @@ const worker = new Worker('telegram-broadcasts', processBroadcast, {
 });
 
 worker.on('completed', (job) => {
-  console.log(`Broadcast job \( {job.id || 'immediate'} completed for user \){job.data.userId}`);
+  console.log('Broadcast job (' + (job.id || 'immediate') + ') completed for user ' + job.data.userId);
 });
 
 worker.on('failed', async (job, err) => {
-  console.error(`Broadcast job \( {job.id || 'immediate'} failed permanently: \){err.message}`);
+  console.error('Broadcast job (' + (job.id || 'immediate') + ') failed permanently: ' + err.message);
   const { userId, broadcastId } = job.data || {};
   if (broadcastId) {
     await ScheduledBroadcast.findOneAndUpdate({ broadcastId }, { status: 'failed' }).catch(() => {});
@@ -1536,11 +1535,15 @@ app.get('/api/broadcast/scheduled', authenticateToken, async (req, res) => {
 });
 
 app.delete('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req, res) => {
-  const { broadcastId } = req.params;
+  const broadcastId = req.params.broadcastId;
   const task = await ScheduledBroadcast.findOne({ broadcastId, userId: req.user.id });
   if (!task) return res.status(404).json({ error: 'Not found' });
 
-  await broadcastQueue.removeJob(broadcastId).catch(() => {});
+  const job = await broadcastQueue.getJob(broadcastId);
+  if (job) {
+    await job.remove();
+  }
+
   await task.deleteOne();
 
   res.json({ success: true });
@@ -1552,7 +1555,10 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req
 
   if (!task) return res.status(400).json({ error: 'Cannot edit this broadcast' });
 
-  await broadcastQueue.removeJob(task.broadcastId).catch(() => {});
+  const oldJob = await broadcastQueue.getJob(task.broadcastId);
+  if (oldJob) {
+    await oldJob.remove();
+  }
 
   let needsUpdate = false;
 
