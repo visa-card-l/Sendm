@@ -11,6 +11,8 @@ const path = require('path');
 const mongoose = require('mongoose');
 const axios = require('axios');
 const crypto = require('crypto');
+const IORedis = require('ioredis');
+const { Queue, Worker, QueueScheduler } = require('bullmq');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -51,6 +53,18 @@ const MONTHLY_PRICE_KOBO = 500000; // ₦5,000 in kobo
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 8000;
 const MAX_MSG_LENGTH = 4000;
+
+// Redis + BullMQ setup
+const redisConnection = process.env.REDIS_URL 
+  ? new IORedis(process.env.REDIS_URL)
+  : new IORedis({ host: 'localhost', port: 6379 });
+
+if (!process.env.REDIS_URL) {
+  console.warn('⚠️ WARNING: REDIS_URL not set in .env, falling back to localhost:6379');
+}
+
+const broadcastQueue = new Queue('telegram-broadcasts', { connection: redisConnection });
+new QueueScheduler('telegram-broadcasts', { connection: redisConnection });
 
 // ==================== CONTACT VALIDATION REGEX ====================
 const CONTACT_REGEX = /^(\+?[0-9\s\-\(\)]{7,20}|[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$/;
@@ -277,17 +291,13 @@ function launchUserBot(user) {
 
   const bot = new Telegraf(user.telegramBotToken);
 
-  // ==================== FIXES FOR "Bot is not running!" ====================
   bot.telegram.webhookReply = false;
   bot.options.webhookReply = false;
 
-  // Dummy launch to satisfy internal state without starting polling
   bot.launch({
     dropPendingUpdates: true,
     allowedUpdates: []
-  }).catch(() => {
-    // We expect this to "fail" silently in webhook mode - that's normal
-  });
+  }).catch(() => {});
 
   bot.catch((err) => {
     if (err.message && err.message.includes('Bot is not running')) {
@@ -608,6 +618,116 @@ async function incrementDailyBroadcast(userId) {
   return record.count;
 }
 
+// ==================== BullMQ Worker ====================
+async function processBroadcast(job) {
+  const { userId, message, broadcastId } = job.data;
+
+  const bot = activeBots.get(userId);
+  if (!bot) {
+    throw new Error('Telegram bot not connected');
+  }
+
+  const chunks = splitTelegramMessage(message);
+
+  const targets = await Contact.find({
+    userId,
+    status: 'subscribed',
+    telegramChatId: { $exists: true, $ne: null }
+  });
+
+  const total = targets.length;
+  let sent = 0;
+  let failed = 0;
+
+  const batches = [];
+  for (let i = 0; i < targets.length; i += BATCH_SIZE) {
+    batches.push(targets.slice(i, i + BATCH_SIZE));
+  }
+
+  for (let b = 0; b < batches.length; b++) {
+    const batch = batches[b];
+
+    const sendPromises = batch.map(async (target) => {
+      try {
+        for (const chunk of chunks) {
+          await bot.telegram.sendMessage(target.telegramChatId, chunk, { parse_mode: 'HTML' });
+        }
+        sent++;
+      } catch (err) {
+        failed++;
+        const isBlocked = err.response?.error_code === 403 ||
+          /blocked|forbidden|chat not found|deactivated/i.test(err.message || '');
+        if (isBlocked) {
+          await Contact.findByIdAndUpdate(target._id, {
+            status: 'unsubscribed',
+            unsubscribedAt: new Date(),
+            telegramChatId: null
+          });
+        }
+      }
+    });
+
+    await Promise.all(sendPromises);
+
+    if (b < batches.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL_MS));
+    }
+  }
+
+  // Send report
+  const user = await User.findOne({ id: userId });
+  let reportText = broadcastId ? '<b>Scheduled Broadcast Report</b>\n\n' : '<b>Broadcast Report</b>\n\n';
+  if (total === 0) {
+    reportText += 'No subscribed contacts with Telegram connected.';
+  } else {
+    const emoji = failed === 0 ? '✅' : '⚠️';
+    reportText += `\( {emoji} <b> \){sent} of ${total}</b> delivered.\n`;
+    if (failed > 0) reportText += `${failed} failed.`;
+  }
+  reportText += '\n\nTime: ' + new Date().toLocaleString();
+
+  if (user && user.isTelegramConnected && user.telegramChatId && activeBots.has(userId)) {
+    try {
+      await bot.telegram.sendMessage(user.telegramChatId, reportText, { parse_mode: 'HTML' });
+    } catch (err) {
+      console.error('Failed to send report to user ' + userId, err);
+    }
+  }
+
+  if (broadcastId) {
+    await ScheduledBroadcast.deleteOne({ broadcastId });
+  }
+
+  invalidateUserCache(userId, 'contacts');
+}
+
+const worker = new Worker('telegram-broadcasts', processBroadcast, {
+  connection: redisConnection,
+  concurrency: 4
+});
+
+worker.on('completed', (job) => {
+  console.log(`Broadcast job \( {job.id || 'immediate'} completed for user \){job.data.userId}`);
+});
+
+worker.on('failed', async (job, err) => {
+  console.error(`Broadcast job \( {job.id || 'immediate'} failed permanently: \){err.message}`);
+  const { userId, broadcastId } = job.data || {};
+  if (broadcastId) {
+    await ScheduledBroadcast.findOneAndUpdate({ broadcastId }, { status: 'failed' }).catch(() => {});
+  }
+  const user = await User.findOne({ id: userId });
+  if (user && user.isTelegramConnected && user.telegramChatId && activeBots.has(userId)) {
+    const bot = activeBots.get(userId);
+    const text = broadcastId 
+      ? '<b>Scheduled Broadcast Failed</b>\n\nFailed after retries.\nError: ' + err.message
+      : '<b>Broadcast Failed</b>\n\nFailed after retries.\nError: ' + err.message;
+    try {
+      await bot.telegram.sendMessage(user.telegramChatId, text, { parse_mode: 'HTML' });
+    } catch {}
+  }
+});
+
 // ==================== JWT AUTH ====================
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -694,8 +814,6 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
       timeout: 10000
     });
 
-    console.log('Telegram getMe response:', response.data);
-
     if (!response.data.ok) {
       return res.status(400).json({ 
         error: 'Invalid bot token – Telegram rejected it: ' + (response.data.description || 'Unauthorized') 
@@ -751,8 +869,6 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
     const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe', {
       timeout: 10000
     });
-
-    console.log('getMe response (change token):', response.data);
 
     if (!response.data.ok) {
       return res.status(400).json({ 
@@ -990,7 +1106,6 @@ app.get('/subscription-success', (req, res) => {
 });
 
 // ==================== CACHED HIGH-READ ENDPOINTS ====================
-
 app.get('/p/:shortId', async (req, res) => {
   const key = 'landing:' + req.params.shortId;
   const cached = publicCache.get(key);
@@ -1339,115 +1454,6 @@ app.post('/api/contacts/delete', authenticateToken, async (req, res) => {
 });
 
 // ==================== BROADCASTING ====================
-async function executeBroadcast(userId, message) {
-  const bot = activeBots.get(userId);
-  if (!bot) return { sent: 0, failed: 0, total: 0, error: 'Bot not connected' };
-
-  const sanitizedMessage = sanitizeTelegramHtml(message);
-  const numberedChunks = splitTelegramMessage(sanitizedMessage);
-
-  const targets = await Contact.find({ userId, status: 'subscribed', telegramChatId: { $exists: true } });
-  if (targets.length === 0) return { sent: 0, failed: 0, total: 0 };
-
-  const batches = [];
-  for (let i = 0; i < targets.length; i += BATCH_SIZE) {
-    batches.push(targets.slice(i, i + BATCH_SIZE));
-  }
-
-  let sent = 0;
-  let failed = 0;
-
-  for (let i = 0; i < batches.length; i++) {
-    const batch = batches[i];
-    for (let j = 0; j < batch.length; j++) {
-      const target = batch[j];
-      try {
-        for (let k = 0; k < numberedChunks.length; k++) {
-          await bot.telegram.sendMessage(target.telegramChatId, numberedChunks[k], { parse_mode: 'HTML' });
-        }
-        sent++;
-      } catch (err) {
-        failed++;
-        const isBlocked = err.response && err.response.error_code === 403 ||
-          (err.message && /blocked|kicked|forbidden|chat not found|user is deactivated/i.test(err.message));
-        if (isBlocked) {
-          target.status = 'unsubscribed';
-          target.unsubscribedAt = new Date();
-          target.telegramChatId = null;
-          await target.save();
-          invalidateUserCache(userId, 'contacts');
-        }
-      }
-    }
-    if (i < batches.length - 1) {
-      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL_MS));
-    }
-  }
-
-  return { sent, failed, total: targets.length };
-}
-
-// ==================== SCHEDULER ====================
-setInterval(async () => {
-  const now = new Date();
-  const due = await ScheduledBroadcast.find({ 
-    status: 'pending', 
-    scheduledTime: { $lte: now } 
-  });
-
-  if (due.length === 0) return;
-
-  const concurrency = 4;
-  const running = new Set();
-
-  for (const task of due) {
-    const job = async () => {
-      try {
-        task.status = 'sent';
-        await task.save();
-
-        const result = await executeBroadcast(task.userId, task.message);
-
-        const user = await User.findOne({ id: task.userId });
-        if (user && user.isTelegramConnected && activeBots.has(user.id)) {
-          let reportText = '<b>Scheduled Broadcast Report</b>\n\n';
-          if (result.error) {
-            reportText += '<b>Failed to send</b>\n' + escapeHtml(result.error);
-          } else {
-            const emoji = result.failed === 0 ? '✅' : '⚠️';
-            reportText += emoji + ' <b>' + result.sent + ' of ' + result.total + '</b> contacts received the message.\n';
-            if (result.failed > 0) reportText += result.failed + ' failed to deliver.';
-          }
-          reportText += '\n\nSent on: ' + new Date().toLocaleString();
-
-          try {
-            await activeBots.get(user.id).telegram.sendMessage(user.telegramChatId, reportText, { parse_mode: 'HTML' });
-          } catch (err) {
-            console.error('Failed to send report to ' + user.email + ':', err.message);
-          }
-        }
-
-        await ScheduledBroadcast.deleteOne({ broadcastId: task.broadcastId });
-      } catch (err) {
-        console.error('Error processing scheduled broadcast ' + task.broadcastId + ' for user ' + task.userId + ':', err);
-      } finally {
-        running.delete(job);
-      }
-    };
-
-    job();
-    running.add(job);
-
-    if (running.size >= concurrency) {
-      await Promise.race([...running]);
-    }
-  }
-
-  if (running.size > 0) {
-    await Promise.all([...running]);
-  }
-}, 10000);
-
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
@@ -1458,9 +1464,20 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
     return res.status(403).json({ error: 'Daily broadcast limit reached.' });
   }
 
-  const result = await executeBroadcast(req.user.id, message.trim());
-  invalidateUserCache(req.user.id, 'contacts');
-  res.json({ success: true, sent: result.sent, failed: result.failed, total: result.total });
+  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
+
+  await broadcastQueue.add('send-broadcast', {
+    userId: req.user.id,
+    message: sanitizedMessage
+  }, {
+    attempts: 4,
+    backoff: { type: 'exponential', delay: 5000 }
+  });
+
+  res.json({ 
+    success: true, 
+    message: 'Broadcast queued and sending in background. You will receive a delivery report via Telegram shortly.' 
+  });
 });
 
 app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
@@ -1478,15 +1495,32 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Invalid future time' });
   }
 
+  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
+  const broadcastId = uuidv4();
+
   const broadcast = await ScheduledBroadcast.create({
-    broadcastId: uuidv4(),
+    broadcastId,
     userId: req.user.id,
-    message: sanitizeTelegramHtml(message.trim()),
+    message: sanitizedMessage,
     recipients,
-    scheduledTime: time
+    scheduledTime: time,
+    status: 'pending'
   });
 
-  res.json({ success: true, broadcastId: broadcast.broadcastId, scheduledTime: time.toISOString() });
+  const delay = time.getTime() - Date.now();
+
+  await broadcastQueue.add('send-broadcast', {
+    userId: req.user.id,
+    message: sanitizedMessage,
+    broadcastId
+  }, {
+    jobId: broadcastId,
+    delay,
+    attempts: 4,
+    backoff: { type: 'exponential', delay: 5000 }
+  });
+
+  res.json({ success: true, broadcastId, scheduledTime: time.toISOString() });
 });
 
 app.get('/api/broadcast/scheduled', authenticateToken, async (req, res) => {
@@ -1502,8 +1536,13 @@ app.get('/api/broadcast/scheduled', authenticateToken, async (req, res) => {
 });
 
 app.delete('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req, res) => {
-  const result = await ScheduledBroadcast.deleteOne({ broadcastId: req.params.broadcastId, userId: req.user.id });
-  if (result.deletedCount === 0) return res.status(404).json({ error: 'Not found' });
+  const { broadcastId } = req.params;
+  const task = await ScheduledBroadcast.findOne({ broadcastId, userId: req.user.id });
+  if (!task) return res.status(404).json({ error: 'Not found' });
+
+  await broadcastQueue.removeJob(broadcastId).catch(() => {});
+  await task.deleteOne();
+
   res.json({ success: true });
 });
 
@@ -1513,15 +1552,42 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req
 
   if (!task) return res.status(400).json({ error: 'Cannot edit this broadcast' });
 
-  if (message && message.trim()) task.message = sanitizeTelegramHtml(message.trim());
-  if (recipients) task.recipients = recipients;
+  await broadcastQueue.removeJob(task.broadcastId).catch(() => {});
+
+  let needsUpdate = false;
+
+  if (message && message.trim()) {
+    task.message = sanitizeTelegramHtml(message.trim());
+    needsUpdate = true;
+  }
+  if (recipients) {
+    task.recipients = recipients;
+    needsUpdate = true;
+  }
   if (scheduledTime) {
     const newTime = new Date(scheduledTime);
     if (isNaN(newTime.getTime()) || newTime <= new Date()) return res.status(400).json({ error: 'Invalid future time' });
     task.scheduledTime = newTime;
+    needsUpdate = true;
   }
 
-  await task.save();
+  if (needsUpdate) {
+    await task.save();
+
+    const delay = task.scheduledTime.getTime() - Date.now();
+
+    await broadcastQueue.add('send-broadcast', {
+      userId: task.userId,
+      message: task.message,
+      broadcastId: task.broadcastId
+    }, {
+      jobId: task.broadcastId,
+      delay: delay > 0 ? delay : 0,
+      attempts: 4,
+      backoff: { type: 'exponential', delay: 5000 }
+    });
+  }
+
   res.json({ success: true, broadcastId: task.broadcastId, scheduledTime: task.scheduledTime.toISOString() });
 });
 
@@ -1702,11 +1768,20 @@ mongoose.connection.once('open', async () => {
   console.log('Launched ' + usersWithBots.length + ' bots in pure webhook mode');
 });
 
-process.on('SIGTERM', () => {
+process.on('SIGTERM', async () => {
   console.log('Shutting down gracefully...');
+  await worker.close();
+  await broadcastQueue.close();
   process.exit(0);
 });
-// Simple ping / health check endpoint
+
+process.on('SIGINT', async () => {
+  console.log('Shutting down gracefully...');
+  await worker.close();
+  await broadcastQueue.close();
+  process.exit(0);
+});
+
 app.get('/ping', (req, res) => {
   res.status(200).type('text/plain').send('ok');
 });
@@ -1716,6 +1791,6 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FULL VERSION WITH "BOT NOT RUNNING" FIX ATTEMPT');
+  console.log('\nSENDEM SERVER — FULL VERSION WITH BullMQ + Redis BROADCAST QUEUE');
   console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
