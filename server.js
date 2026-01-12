@@ -1706,6 +1706,10 @@ process.on('SIGTERM', () => {
   console.log('Shutting down gracefully...');
   process.exit(0);
 });
+// Simple ping / health check endpoint
+app.get('/ping', (req, res) => {
+  res.status(200).type('text/plain').send('ok');
+});
 
 app.use((req, res) => {
   res.status(404).render('404');
