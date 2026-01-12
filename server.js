@@ -54,13 +54,22 @@ const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 8000;
 const MAX_MSG_LENGTH = 4000;
 
-// Redis + BullMQ setup
-const redisConnection = process.env.REDIS_URL 
-  ? new IORedis(process.env.REDIS_URL)
-  : new IORedis({ host: 'localhost', port: 6379 });
+// Redis + BullMQ setup – FIXED FOR BULLMQ v5+ COMPATIBILITY
+let redisConnection;
 
-if (!process.env.REDIS_URL) {
+if (process.env.REDIS_URL) {
+  redisConnection = new IORedis(process.env.REDIS_URL, {
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false
+  });
+} else {
   console.warn('⚠️ WARNING: REDIS_URL not set in .env, falling back to localhost:6379');
+  redisConnection = new IORedis({
+    host: 'localhost',
+    port: 6379,
+    maxRetriesPerRequest: null,
+    enableReadyCheck: false
+  });
 }
 
 const broadcastQueue = new Queue('telegram-broadcasts', { connection: redisConnection });
