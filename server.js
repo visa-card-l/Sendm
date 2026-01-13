@@ -1466,6 +1466,11 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
+  // NEW: Reject messages longer than 4000 characters
+  if (message.trim().length > MAX_MSG_LENGTH) {
+    return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
+  }
+
   const todayCount = await incrementDailyBroadcast(req.user.id);
   const limits = getUserLimits(req.user);
   if (todayCount > limits.dailyBroadcasts && limits.dailyBroadcasts !== Infinity) {
@@ -1491,6 +1496,11 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
 app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
+
+  // NEW: Reject messages longer than 4000 characters
+  if (message.trim().length > MAX_MSG_LENGTH) {
+    return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
+  }
 
   const todayCount = await incrementDailyBroadcast(req.user.id);
   const limits = getUserLimits(req.user);
@@ -1572,6 +1582,10 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req
   let needsUpdate = false;
 
   if (message && message.trim()) {
+    // NEW: Reject updated messages longer than 4000 characters
+    if (message.trim().length > MAX_MSG_LENGTH) {
+      return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
+    }
     task.message = sanitizeTelegramHtml(message.trim());
     needsUpdate = true;
   }
