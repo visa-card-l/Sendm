@@ -84,27 +84,27 @@
       cursor: pointer;
     }
     .final-cta-wrapper {
-      padding: 0 50px 80px;
+      padding: 0 50px 60px;
       text-align: center;
       background: #FFFFFF;
     }
     .join-sendmi-btn {
       display: inline-block;
-      padding: 18px 60px;
-      font-size: 19px;
+      padding: 10px 32px;           /* much smaller padding */
+      font-size: 15px;               /* smaller text */
       font-weight: 600;
       background: #0066FF;
       color: white;
       border-radius: 50px;
       text-decoration: none;
-      box-shadow: 0 10px 30px rgba(0, 102, 255, 0.3);
-      transition: all 0.3s ease;
+      box-shadow: 0 4px 12px rgba(0, 102, 255, 0.25);
+      transition: all 0.25s ease;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
     .join-sendmi-btn:hover {
       background: #0055dd;
-      transform: translateY(-3px);
-      box-shadow: 0 14px 40px rgba(0, 102, 255, 0.4);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 16px rgba(0, 102, 255, 0.35);
     }
   </style>
 </head>
@@ -126,14 +126,12 @@
       <% }) %>
     </div>
 
-    <!-- Final CTA Button -->
+    <!-- Small final CTA button -->
     <div class="final-cta-wrapper">
       <a href="https://sendmi.onrender.com" class="join-sendmi-btn" target="_blank" rel="noopener">
         Join Sendmi
       </a>
     </div>
-
-    <!-- Footer removed completely (including unsubscribe) -->
   </div>
 </body>
 </html>
