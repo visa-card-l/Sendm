@@ -15,12 +15,10 @@
       box-sizing: border-box;
     }
     body {
-      font-family: 'Segoe UI', Arial, sans-serif;
+      font-family: 'Segoe UI', system-ui, Arial, sans-serif;
       background: #FFFFFF;
       color: #343a40;
       line-height: 1.7;
-      margin: 0;
-      padding: 0;
     }
     .container {
       max-width: 700px;
@@ -28,8 +26,7 @@
       background: #FFFFFF;
       border-radius: 24px;
       overflow: hidden;
-      /* Very subtle shadow – remove if you want completely flat design */
-      box-shadow: 0 4px 16px rgba(0,0,0,0.05);
+      box-shadow: 0 20px 60px rgba(0,0,0,0.08);
     }
     .content {
       padding: 80px 50px;
@@ -44,13 +41,6 @@
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-    }
-    h2 {
-      font-size: 32px;
-      margin: 40px 0 20px;
-    }
-    p {
-      margin: 20px 0;
     }
     .hero-img {
       max-width: 100%;
@@ -68,11 +58,11 @@
       border-radius: 16px;
       box-shadow: 0 12px 35px rgba(21,100,192,0.4);
       text-decoration: none;
-      margin: 30px 0;
+      margin-bottom: 30px;
     }
     .form-block {
       padding: 40px;
-      background: #f9fbff;
+      background: #FFFFFF;
       border-radius: 20px;
       margin: 50px 0;
       border: 1px solid #e0e7ff;
@@ -93,30 +83,28 @@
       font-weight: 600;
       cursor: pointer;
     }
-
-    /* Final Join Sendmi Button */
-    .join-section {
+    .final-cta-wrapper {
       padding: 0 50px 80px;
       text-align: center;
       background: #FFFFFF;
     }
-    .join-btn {
+    .join-sendmi-btn {
       display: inline-block;
-      padding: 18px 64px;
+      padding: 18px 60px;
       font-size: 19px;
       font-weight: 600;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: #0066FF;
       color: white;
-      border-radius: 9999px;
+      border-radius: 50px;
       text-decoration: none;
-      box-shadow: 0 10px 30px rgba(0, 102, 255, 0.25);
-      transition: all 0.25s ease;
+      box-shadow: 0 10px 30px rgba(0, 102, 255, 0.3);
+      transition: all 0.3s ease;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-    .join-btn:hover {
+    .join-sendmi-btn:hover {
       background: #0055dd;
       transform: translateY(-3px);
-      box-shadow: 0 14px 40px rgba(0, 102, 255, 0.35);
+      box-shadow: 0 14px 40px rgba(0, 102, 255, 0.4);
     }
   </style>
 </head>
@@ -126,31 +114,26 @@
       <% blocks.forEach(block => { %>
         <% if (block.type === 'text') { %>
           <% if (block.tag === 'h1') { %><h1><%= block.content %></h1><% } %>
-          <% else if (block.tag === 'h2') { %><h2><%= block.content %></h2><% } %>
-          <% else if (block.tag === 'p') { %><p><%= block.content %></p><% } %>
+          <% if (block.tag === 'h2') { %><h2><%= block.content %></h2><% } %>
+          <% if (block.tag === 'p') { %><p><%= block.content %></p><% } %>
         <% } else if (block.type === 'image') { %>
           <img src="<%= block.src %>" alt="Image" class="hero-img" loading="lazy">
         <% } else if (block.type === 'button') { %>
-          <a href="<%= block.href || '#' %>" 
-             class="cta" 
-             <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener noreferrer"' : '' %>>
-            <%= block.text %>
-          </a>
+          <a href="<%= block.href || '#' %>" class="cta" <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>><%= block.text %></a>
         <% } else if (block.type === 'form') { %>
           <div class="form-block"><%- block.html %></div>
         <% } %>
       <% }) %>
     </div>
 
-    <!-- Final Call-to-Action Button -->
-    <div class="join-section">
-      <a href="https://sendmi.onrender.com" 
-         class="join-btn" 
-         target="_blank" 
-         rel="noopener noreferrer">
+    <!-- Final CTA Button -->
+    <div class="final-cta-wrapper">
+      <a href="https://sendmi.onrender.com" class="join-sendmi-btn" target="_blank" rel="noopener">
         Join Sendmi
       </a>
     </div>
+
+    <!-- Footer removed completely (including unsubscribe) -->
   </div>
 </body>
 </html>
