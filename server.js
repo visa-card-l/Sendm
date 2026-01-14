@@ -1463,16 +1463,13 @@ app.post('/api/contacts/delete', authenticateToken, async (req, res) => {
 
 // ==================== BROADCASTING ====================
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
-  let { message } = req.body;
+  const { message } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
   // NEW: Reject messages longer than 4000 characters
   if (message.trim().length > MAX_MSG_LENGTH) {
     return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
   }
-
-  // FIX: Convert single newlines to double newlines so Telegram HTML shows line breaks
-  message = message.replace(/\n/g, '\n\n');
 
   const todayCount = await incrementDailyBroadcast(req.user.id);
   const limits = getUserLimits(req.user);
@@ -1497,16 +1494,13 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
 });
 
 app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
-  let { message, scheduledTime, recipients = 'all' } = req.body;
+  const { message, scheduledTime, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
   // NEW: Reject messages longer than 4000 characters
   if (message.trim().length > MAX_MSG_LENGTH) {
     return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
   }
-
-  // FIX: Convert single newlines to double newlines for Telegram HTML
-  message = message.replace(/\n/g, '\n\n');
 
   const todayCount = await incrementDailyBroadcast(req.user.id);
   const limits = getUserLimits(req.user);
@@ -1592,9 +1586,7 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req
     if (message.trim().length > MAX_MSG_LENGTH) {
       return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
     }
-    // FIX: Convert single newlines to double newlines for Telegram HTML
-    const processedMessage = message.replace(/\n/g, '\n\n');
-    task.message = sanitizeTelegramHtml(processedMessage.trim());
+    task.message = sanitizeTelegramHtml(message.trim());
     needsUpdate = true;
   }
   if (recipients) {
