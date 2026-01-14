@@ -5,53 +5,151 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title><%= title %></title>
   <style>
-    :root{--primary:#1564C0;--primary-light:#3485e5;}
-    *{margin:0;padding:0;box-sizing:border-box;}
-    body{font-family:'Segoe UI',Arial,sans-serif;background:#f5f8fc;color:#343a40;line-height:1.7;}
-    .container{max-width:700px;margin:40px auto;background:white;border-radius:24px;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.12);}
-    .content{padding:80px 50px;text-align:center;}
-
-    /* ── NEW: This makes single line breaks visible inside text blocks ── */
-    .text-content {
-      white-space: pre-line;   /* ← the magic line: single \n becomes visible break */
-      line-height: 1.6;        /* nicer spacing between lines */
-      margin-bottom: 1.2em;    /* consistent paragraph spacing */
+    :root {
+      --primary: #1564C0;
+      --primary-light: #3485e5;
+    }
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #FFFFFF;
+      color: #343a40;
+      line-height: 1.7;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 700px;
+      margin: 40px auto;
+      background: #FFFFFF;
+      border-radius: 24px;
+      overflow: hidden;
+      /* Very subtle shadow – remove if you want completely flat design */
+      box-shadow: 0 4px 16px rgba(0,0,0,0.05);
+    }
+    .content {
+      padding: 80px 50px;
+      text-align: center;
+      background: #FFFFFF;
+    }
+    h1 {
+      font-size: 42px;
+      font-weight: 700;
+      margin-bottom: 20px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    h2 {
+      font-size: 32px;
+      margin: 40px 0 20px;
+    }
+    p {
+      margin: 20px 0;
+    }
+    .hero-img {
+      max-width: 100%;
+      border-radius: 18px;
+      box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+      margin: 50px 0;
+    }
+    .cta {
+      display: inline-block;
+      padding: 22px 70px;
+      font-size: 21px;
+      font-weight: 600;
+      background: var(--primary);
+      color: white;
+      border-radius: 16px;
+      box-shadow: 0 12px 35px rgba(21,100,192,0.4);
+      text-decoration: none;
+      margin: 30px 0;
+    }
+    .form-block {
+      padding: 40px;
+      background: #f9fbff;
+      border-radius: 20px;
+      margin: 50px 0;
+      border: 1px solid #e0e7ff;
+    }
+    .form-block input,
+    .form-block button {
+      width: 100%;
+      padding: 16px;
+      margin: 10px 0;
+      border-radius: 12px;
+      border: 1px solid #ddd;
+      font-size: 16px;
+    }
+    .form-block button {
+      background: var(--primary);
+      color: white;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
     }
 
-    h1{font-size:42px;font-weight:700;margin-bottom:20px;background:linear-gradient(135deg,var(--primary),var(--primary-light));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;}
-    h2{font-size:32px;font-weight:600;margin:35px 0 15px;}
-    p{margin-bottom:1.2em;}
-
-    .hero-img{max-width:100%;border-radius:18px;box-shadow:0 15px 40px rgba(0,0,0,0.15);margin:50px 0;}
-    .cta{display:inline-block;padding:22px 70px;font-size:21px;font-weight:600;background:var(--primary);color:white;border-radius:16px;box-shadow:0 12px 35px rgba(21,100,192,0.4);text-decoration:none;margin-bottom:30px;}
-    .form-block{padding:40px;background:#f9fbff;border-radius:20px;margin:50px 0;border:1px solid #e0e7ff;}
-    .form-block input,.form-block button{width:100%;padding:16px;margin:10px 0;border-radius:12px;border:1px solid #ddd;font-size:16px;}
-    .form-block button{background:var(--primary);color:white;border:none;font-weight:600;cursor:pointer;}
-    .footer{padding:40px;background:#f9f9f9;text-align:center;color:#888;font-size:14px;border-top:1px solid #eee;}
+    /* Final Join Sendmi Button */
+    .join-section {
+      padding: 0 50px 80px;
+      text-align: center;
+      background: #FFFFFF;
+    }
+    .join-btn {
+      display: inline-block;
+      padding: 18px 64px;
+      font-size: 19px;
+      font-weight: 600;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0066FF;
+      color: white;
+      border-radius: 9999px;
+      text-decoration: none;
+      box-shadow: 0 10px 30px rgba(0, 102, 255, 0.25);
+      transition: all 0.25s ease;
+    }
+    .join-btn:hover {
+      background: #0055dd;
+      transform: translateY(-3px);
+      box-shadow: 0 14px 40px rgba(0, 102, 255, 0.35);
+    }
   </style>
 </head>
 <body>
   <div class="container">
     <div class="content">
-<% blocks.forEach(block => { %>
-  <% if (block.type === 'text') { %>
-    <div class="text-content">
-      <% if (block.tag === 'h1') { %><h1><%= block.content %></h1><% } %>
-      <% if (block.tag === 'h2') { %><h2><%= block.content %></h2><% } %>
-      <% if (block.tag === 'p') { %><p><%= block.content %></p><% } %>
+      <% blocks.forEach(block => { %>
+        <% if (block.type === 'text') { %>
+          <% if (block.tag === 'h1') { %><h1><%= block.content %></h1><% } %>
+          <% else if (block.tag === 'h2') { %><h2><%= block.content %></h2><% } %>
+          <% else if (block.tag === 'p') { %><p><%= block.content %></p><% } %>
+        <% } else if (block.type === 'image') { %>
+          <img src="<%= block.src %>" alt="Image" class="hero-img" loading="lazy">
+        <% } else if (block.type === 'button') { %>
+          <a href="<%= block.href || '#' %>" 
+             class="cta" 
+             <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener noreferrer"' : '' %>>
+            <%= block.text %>
+          </a>
+        <% } else if (block.type === 'form') { %>
+          <div class="form-block"><%- block.html %></div>
+        <% } %>
+      <% }) %>
     </div>
-  <% } else if (block.type === 'image') { %>
-    <img src="<%= block.src %>" alt="Image" class="hero-img" loading="lazy">
-  <% } else if (block.type === 'button') { %>
-    <a href="<%= block.href || '#' %>" class="cta" <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>><%= block.text %></a>
-  <% } else if (block.type === 'form') { %>
-    <div class="form-block"><%- block.html %></div>
-  <% } %>
-<% }) %>
-    </div>
-    <div class="footer">
-      © <%= new Date().getFullYear() %> Sendm<br>
-      <a href="#" style="color:var(--primary);text-decoration:none;">Unsubscribe</a> • <a href="#" style="color:var(--primary);text-decoration:none;">Privacy</a>
+
+    <!-- Final Call-to-Action Button -->
+    <div class="join-section">
+      <a href="https://sendmi.onrender.com" 
+         class="join-btn" 
+         target="_blank" 
+         rel="noopener noreferrer">
+        Join Sendmi
+      </a>
     </div>
   </div>
 </body>
