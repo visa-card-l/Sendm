@@ -527,8 +527,8 @@ app.post('/webhook/' + WEBHOOK_SECRET + '/:userId', async (req, res) => {
 // ==================== UTILITIES ====================
 function sanitizeTelegramHtml(unsafe) {
   if (!unsafe || typeof unsafe !== 'string') return '';
-  const allowedTags = new Set(['b','strong','i','em','u','ins','s','strike','del','span','tg-spoiler','a','code','pre','tg-emoji']);
-  const allowedAttrs = { a: ['href'], 'tg-emoji': ['emoji-id'] };
+  const allowedTags = new Set(['b','strong','i','em','u','ins','s','strike','del','span','tg-spoiler','a','code','pre','tg-emoji','blockquote']);
+  const allowedAttrs = { a: ['href'], 'tg-emoji': ['emoji-id'], 'blockquote': ['expandable'] };
 
   let clean = unsafe
     .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
@@ -567,11 +567,29 @@ function escapeHtml(unsafe) {
 function textToHtmlForDisplay(text) {
   if (!text) return '';
   
-  // Convert double newlines to paragraph tags
-  // Single newlines to <br>
   return text
     .replace(/\n{2,}/g, '</p><p>')
     .replace(/\n/g, '<br>');
+}
+
+// NEW: Prepare message for Telegram – convert common HTML spacing to \n (since <br>/<p> not supported), then sanitize
+function prepareTelegramMessage(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+
+  let msg = raw.trim();
+
+  // Convert common rich editor spacing to proper \n / \n\n
+  msg = msg
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>\s*<p[^>]*>/gi, '\n\n')
+    .replace(/<p[^>]*>/gi, '')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<div[^>]*>/gi, '\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/\n{3,}/g, '\n\n');
+
+  // Finally sanitize to keep only allowed Telegram HTML tags
+  return sanitizeTelegramHtml(msg);
 }
 
 function splitTelegramMessage(text) {
@@ -645,8 +663,6 @@ async function processBroadcast(job) {
     throw new Error('Telegram bot not connected');
   }
 
-  // FIXED: Use raw \n for natural Telegram line breaks (same as welcome messages)
-  // Message is already sanitized when queued
   const chunks = splitTelegramMessage(message);
 
   const targets = await Contact.find({
@@ -694,7 +710,6 @@ async function processBroadcast(job) {
     }
   }
 
-  // Send report
   const user = await User.findOne({ id: userId });
   let reportText = broadcastId ? '<b>Scheduled Broadcast Report</b>\n\n' : '<b>Broadcast Report</b>\n\n';
   if (total === 0) {
@@ -1137,7 +1152,6 @@ app.get('/p/:shortId', async (req, res) => {
   const page = await LandingPage.findOne({ shortId: req.params.shortId });
   if (!page) return res.status(404).render('404');
 
-  // Process text blocks for proper HTML rendering
   const processedBlocks = page.config.blocks.map(block => {
     if (block.type === 'text') {
       return {
@@ -1493,8 +1507,9 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
-  if (message.trim().length > MAX_MSG_LENGTH) {
-    return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
+  const processed = message.trim();
+  if (processed.length > MAX_MSG_LENGTH * 10) {
+    return res.status(400).json({ error: 'Message too long' });
   }
 
   const todayCount = await incrementDailyBroadcast(req.user.id);
@@ -1503,11 +1518,15 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
     return res.status(403).json({ error: 'Daily broadcast limit reached.' });
   }
 
-  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
+  const readyMessage = prepareTelegramMessage(processed);
+
+  if (readyMessage.length === 0) {
+    return res.status(400).json({ error: 'Message empty after processing' });
+  }
 
   await broadcastQueue.add('send-broadcast', {
     userId: req.user.id,
-    message: sanitizedMessage
+    message: readyMessage
   }, {
     attempts: 4,
     backoff: { type: 'exponential', delay: 5000 }
@@ -1523,8 +1542,9 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
   const { message, scheduledTime, recipients = 'all' } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
 
-  if (message.trim().length > MAX_MSG_LENGTH) {
-    return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
+  const processed = message.trim();
+  if (processed.length > MAX_MSG_LENGTH * 10) {
+    return res.status(400).json({ error: 'Message too long' });
   }
 
   const todayCount = await incrementDailyBroadcast(req.user.id);
@@ -1538,13 +1558,13 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Invalid future time' });
   }
 
-  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
+  const readyMessage = prepareTelegramMessage(processed);
   const broadcastId = uuidv4();
 
   const broadcast = await ScheduledBroadcast.create({
     broadcastId,
     userId: req.user.id,
-    message: sanitizedMessage,
+    message: readyMessage,
     recipients,
     scheduledTime: time,
     status: 'pending'
@@ -1554,7 +1574,7 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
 
   await broadcastQueue.add('send-broadcast', {
     userId: req.user.id,
-    message: sanitizedMessage,
+    message: readyMessage,
     broadcastId
   }, {
     jobId: broadcastId,
@@ -1607,10 +1627,12 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req
   let needsUpdate = false;
 
   if (message && message.trim()) {
-    if (message.trim().length > MAX_MSG_LENGTH) {
-      return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
+    const processed = message.trim();
+    if (processed.length > MAX_MSG_LENGTH * 10) {
+      return res.status(400).json({ error: 'Message too long' });
     }
-    task.message = sanitizeTelegramHtml(message.trim());
+    const readyMessage = prepareTelegramMessage(processed);
+    task.message = readyMessage;
     needsUpdate = true;
   }
   if (recipients) {
