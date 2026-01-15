@@ -52,9 +52,9 @@ const MONTHLY_PRICE_KOBO = 500000; // ₦5,000 in kobo
 // Batching config
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 8000;
-const MAX_MSG_LENGTH = 4000;
+const MAX_MSG_LENGTH = 4096;          // Telegram plain text limit is actually 4096
 
-// Redis + BullMQ setup – FIXED FOR BULLMQ v5+ COMPATIBILITY
+// Redis + BullMQ setup
 let redisConnection;
 
 if (process.env.REDIS_URL) {
@@ -567,21 +567,17 @@ function escapeHtml(unsafe) {
 function textToHtmlForDisplay(text) {
   if (!text) return '';
   
-  // Convert double newlines to paragraph tags
-  // Single newlines to <br>
   return text
     .replace(/\n{2,}/g, '</p><p>')
     .replace(/\n/g, '<br>');
 }
 
-function textToTelegramHtml(text) {
+function cleanPlainTextMessage(text) {
   if (!text) return '';
-  
-  // Telegram HTML mode: use <br> for all line breaks
-  // Double newlines get extra spacing via <br><br>
   return text
-    .replace(/\n{2,}/g, '<br><br>')
-    .replace(/\n/g, '<br>');
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')   // remove zero-width characters
+    .replace(/\r\n/g, '\n')                   // normalize line endings
+    .trim();
 }
 
 function splitTelegramMessage(text) {
@@ -646,7 +642,7 @@ async function incrementDailyBroadcast(userId) {
   return record.count;
 }
 
-// ==================== BullMQ Worker ====================
+// ==================== BullMQ Worker - PLAIN TEXT BROADCAST ====================
 async function processBroadcast(job) {
   const { userId, message, broadcastId } = job.data;
 
@@ -655,10 +651,8 @@ async function processBroadcast(job) {
     throw new Error('Telegram bot not connected');
   }
 
-  // Convert newlines to Telegram-friendly HTML (<br>)
-  const telegramReadyMessage = textToTelegramHtml(message);
-
-  const chunks = splitTelegramMessage(telegramReadyMessage);
+  const cleanMessage = cleanPlainTextMessage(message);
+  const chunks = splitTelegramMessage(cleanMessage);
 
   const targets = await Contact.find({
     userId,
@@ -681,7 +675,8 @@ async function processBroadcast(job) {
     const sendPromises = batch.map(async (target) => {
       try {
         for (const chunk of chunks) {
-          await bot.telegram.sendMessage(target.telegramChatId, chunk, { parse_mode: 'HTML' });
+          // Plain text mode - NO parse_mode!
+          await bot.telegram.sendMessage(target.telegramChatId, chunk);
         }
         sent++;
       } catch (err) {
@@ -705,21 +700,22 @@ async function processBroadcast(job) {
     }
   }
 
-  // Send report
+  // Send report (also in plain text)
   const user = await User.findOne({ id: userId });
-  let reportText = broadcastId ? '<b>Scheduled Broadcast Report</b>\n\n' : '<b>Broadcast Report</b>\n\n';
+  let reportText = broadcastId ? 'Scheduled Broadcast Report\n\n' : 'Broadcast Report\n\n';
+  
   if (total === 0) {
     reportText += 'No subscribed contacts with Telegram connected.';
   } else {
     const emoji = failed === 0 ? '✅' : '⚠️';
-    reportText += '(' + emoji + ' <b>' + sent + ' of ' + total + '</b> delivered.\n';
-    if (failed > 0) reportText += failed + ' failed.';
+    reportText += `\( {emoji} \){sent} of ${total} delivered.\n`;
+    if (failed > 0) reportText += `${failed} failed.`;
   }
-  reportText += '\n\nTime: ' + new Date().toLocaleString();
+  reportText += `\n\nTime: ${new Date().toLocaleString()}`;
 
   if (user && user.isTelegramConnected && user.telegramChatId && activeBots.has(userId)) {
     try {
-      await bot.telegram.sendMessage(user.telegramChatId, reportText, { parse_mode: 'HTML' });
+      await bot.telegram.sendMessage(user.telegramChatId, reportText);
     } catch (err) {
       console.error('Failed to send report to user ' + userId, err);
     }
@@ -751,10 +747,10 @@ worker.on('failed', async (job, err) => {
   if (user && user.isTelegramConnected && user.telegramChatId && activeBots.has(userId)) {
     const bot = activeBots.get(userId);
     const text = broadcastId 
-      ? '<b>Scheduled Broadcast Failed</b>\n\nFailed after retries.\nError: ' + err.message
-      : '<b>Broadcast Failed</b>\n\nFailed after retries.\nError: ' + err.message;
+      ? `Scheduled Broadcast Failed\n\nFailed after retries.\nError: ${err.message}`
+      : `Broadcast Failed\n\nFailed after retries.\nError: ${err.message}`;
     try {
-      await bot.telegram.sendMessage(user.telegramChatId, text, { parse_mode: 'HTML' });
+      await bot.telegram.sendMessage(user.telegramChatId, text);
     } catch {}
   }
 });
@@ -979,8 +975,7 @@ async function send2FACodeViaBot(user, code) {
   try {
     await activeBots.get(user.id).telegram.sendMessage(
       user.telegramChatId,
-      'Security Alert – Password Reset\n\nYour 6-digit code:\n\n<b>' + code + '</b>\n\nValid for 10 minutes.',
-      { parse_mode: 'HTML' }
+      `Security Alert – Password Reset\n\nYour 6-digit code:\n\n${code}\n\nValid for 10 minutes.`
     );
     return true;
   } catch (err) {
@@ -1148,7 +1143,6 @@ app.get('/p/:shortId', async (req, res) => {
   const page = await LandingPage.findOne({ shortId: req.params.shortId });
   if (!page) return res.status(404).render('404');
 
-  // Process text blocks for proper HTML rendering
   const processedBlocks = page.config.blocks.map(block => {
     if (block.type === 'text') {
       return {
@@ -1499,7 +1493,7 @@ app.post('/api/contacts/delete', authenticateToken, async (req, res) => {
   res.json({ success: true, deletedCount: result.deletedCount });
 });
 
-// ==================== BROADCASTING ====================
+// ==================== BROADCASTING - PLAIN TEXT ====================
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
@@ -1514,11 +1508,11 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
     return res.status(403).json({ error: 'Daily broadcast limit reached.' });
   }
 
-  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
+  const cleanMessage = cleanPlainTextMessage(message.trim());
 
   await broadcastQueue.add('send-broadcast', {
     userId: req.user.id,
-    message: sanitizedMessage
+    message: cleanMessage
   }, {
     attempts: 4,
     backoff: { type: 'exponential', delay: 5000 }
@@ -1549,13 +1543,13 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Invalid future time' });
   }
 
-  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
+  const cleanMessage = cleanPlainTextMessage(message.trim());
   const broadcastId = uuidv4();
 
-  const broadcast = await ScheduledBroadcast.create({
+  await ScheduledBroadcast.create({
     broadcastId,
     userId: req.user.id,
-    message: sanitizedMessage,
+    message: cleanMessage,
     recipients,
     scheduledTime: time,
     status: 'pending'
@@ -1565,7 +1559,7 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
 
   await broadcastQueue.add('send-broadcast', {
     userId: req.user.id,
-    message: sanitizedMessage,
+    message: cleanMessage,
     broadcastId
   }, {
     jobId: broadcastId,
@@ -1621,7 +1615,7 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req
     if (message.trim().length > MAX_MSG_LENGTH) {
       return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
     }
-    task.message = sanitizeTelegramHtml(message.trim());
+    task.message = cleanPlainTextMessage(message.trim());
     needsUpdate = true;
   }
   if (recipients) {
@@ -1855,6 +1849,6 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FULL VERSION WITH BullMQ + Redis BROADCAST QUEUE');
+  console.log('\nSENDEM SERVER — FULL VERSION WITH BullMQ + Redis BROADCAST QUEUE (PLAIN TEXT MODE)');
   console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
