@@ -29,7 +29,7 @@
       box-shadow: 0 20px 60px rgba(0,0,0,0.08);
       display: flex;
       flex-direction: column;
-      min-height: 100vh; /* helps push footer to bottom if content is short */
+      min-height: 100vh;
     }
     .content {
       padding: 80px 50px;
@@ -45,6 +45,15 @@
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
+    }
+    h2 {
+      font-size: 32px;
+      font-weight: 700;
+      margin: 35px 0 20px;
+      color: #1a1a1a;
+    }
+    p {
+      margin-bottom: 1.4em;
     }
     .hero-img {
       max-width: 100%;
@@ -91,12 +100,12 @@
       padding: 40px 50px;
       text-align: center;
       background: #FFFFFF;
-      margin-top: auto; /* pushes to very bottom */
+      margin-top: auto;
     }
     .join-sendmi-btn {
       display: inline-block;
-      padding: 8px 24px;           /* very small size */
-      font-size: 13px;              /* tiny text */
+      padding: 8px 24px;
+      font-size: 13px;
       font-weight: 600;
       background: #0066FF;
       color: white;
@@ -118,9 +127,23 @@
     <div class="content">
       <% blocks.forEach(block => { %>
         <% if (block.type === 'text') { %>
-          <% if (block.tag === 'h1') { %><h1><%= block.content %></h1><% } %>
-          <% if (block.tag === 'h2') { %><h2><%= block.content %></h2><% } %>
-          <% if (block.tag === 'p') { %><p><%= block.content %></p><% } %>
+          <% 
+            let html = block.content
+              .replace(/\n{2,}/g, '</p><p>')
+              .replace(/\n/g, '<br>');
+            
+            if (!html.includes('<p')) {
+              html = '<p>' + html + '</p>';
+            }
+          %>
+
+          <% if (block.tag === 'h1') { %>
+            <h1><%- html %></h1>
+          <% } else if (block.tag === 'h2') { %>
+            <h2><%- html %></h2>
+          <% } else { %>
+            <%- html %>
+          <% } %>
         <% } else if (block.type === 'image') { %>
           <img src="<%= block.src %>" alt="Image" class="hero-img" loading="lazy">
         <% } else if (block.type === 'button') { %>
