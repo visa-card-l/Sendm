@@ -32,7 +32,7 @@ if (!DOMAIN) {
 
 if (!WEBHOOK_SECRET || WEBHOOK_SECRET.trim() === '') {
   WEBHOOK_SECRET = crypto.randomBytes(32).toString('hex');
-  console.warn('⚠️  WARNING: WEBHOOK_SECRET not set in .env! Generated temporary one:');
+  console.warn('âš ï¸  WARNING: WEBHOOK_SECRET not set in .env! Generated temporary one:');
   console.warn('     ' + WEBHOOK_SECRET);
   console.warn('     Add it to your .env file to keep it permanent across restarts:');
   console.warn('     WEBHOOK_SECRET=' + WEBHOOK_SECRET + '\n');
@@ -41,20 +41,20 @@ if (!WEBHOOK_SECRET || WEBHOOK_SECRET.trim() === '') {
 }
 
 if (JWT_SECRET.includes('fallback')) {
-  console.warn('⚠️  WARNING: JWT_SECRET not set in .env! Using insecure fallback.');
+  console.warn('âš ï¸  WARNING: JWT_SECRET not set in .env! Using insecure fallback.');
 }
 if (PAYSTACK_SECRET_KEY.startsWith('sk_test_fallback')) {
-  console.warn('⚠️  WARNING: PAYSTACK_SECRET_KEY not set in .env!');
+  console.warn('âš ï¸  WARNING: PAYSTACK_SECRET_KEY not set in .env!');
 }
 
-const MONTHLY_PRICE_KOBO = 500000; // ₦5,000 in kobo
+const MONTHLY_PRICE_KOBO = 500000; // â‚¦5,000 in kobo
 
 // Batching config
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 8000;
-const MAX_MSG_LENGTH = 4096;          // Telegram plain text limit is actually 4096
+const MAX_MSG_LENGTH = 4000;
 
-// Redis + BullMQ setup
+// Redis + BullMQ setup â€“ FIXED FOR BULLMQ v5+ COMPATIBILITY
 let redisConnection;
 
 if (process.env.REDIS_URL) {
@@ -63,7 +63,7 @@ if (process.env.REDIS_URL) {
     enableReadyCheck: false
   });
 } else {
-  console.warn('⚠️ WARNING: REDIS_URL not set in .env, falling back to localhost:6379');
+  console.warn('âš ï¸ WARNING: REDIS_URL not set in .env, falling back to localhost:6379');
   redisConnection = new IORedis({
     host: 'localhost',
     port: 6379,
@@ -143,7 +143,7 @@ setInterval(() => {
   for (const [userId, bucket] of userCache.entries()) {
     if (now - bucket.lastAccess > INACTIVE_THRESHOLD) {
       userCache.delete(userId);
-      console.log('🧹 Cleaned cache for inactive user: ' + userId);
+      console.log('ðŸ§¹ Cleaned cache for inactive user: ' + userId);
     }
   }
 }, 10 * 60 * 1000);
@@ -164,7 +164,7 @@ mongoose.connect(MONGODB_URI, {
   socketTimeoutMS: 45000,
   connectTimeoutMS: 30000,
 }).then(() => {
-  console.log('✅ MongoDB connected');
+  console.log('âœ… MongoDB connected');
 }).catch(err => {
   console.error('MongoDB connection failed:', err.message);
   process.exit(1);
@@ -572,11 +572,14 @@ function textToHtmlForDisplay(text) {
     .replace(/\n/g, '<br>');
 }
 
-function cleanPlainTextMessage(text) {
+function textToTelegramHtml(text) {
   if (!text) return '';
+  
+  // Preserve natural newlines - Telegram renders \n correctly in HTML mode
+  // We just normalize excessive empty lines
   return text
-    .replace(/[\u200B-\u200D\uFEFF]/g, '')   // remove zero-width characters
-    .replace(/\r\n/g, '\n')                   // normalize line endings
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n')     // max 3 consecutive newlines
     .trim();
 }
 
@@ -590,20 +593,20 @@ function splitTelegramMessage(text) {
     let line = lines[i];
     while (line.length > MAX_MSG_LENGTH) {
       if (current) {
-        chunks.push(current.trim());
+        chunks.push(current.trimEnd());
         current = '';
       }
-      chunks.push(line.substring(0, MAX_MSG_LENGTH).trim());
+      chunks.push(line.substring(0, MAX_MSG_LENGTH).trimEnd());
       line = line.substring(MAX_MSG_LENGTH);
     }
     if (current.length + line.length + (current ? 1 : 0) <= MAX_MSG_LENGTH) {
       current += (current ? '\n' : '') + line;
     } else {
-      if (current) chunks.push(current.trim());
+      if (current) chunks.push(current.trimEnd());
       current = line;
     }
   }
-  if (current) chunks.push(current.trim());
+  if (current) chunks.push(current.trimEnd());
 
   if (chunks.length <= 1) return chunks;
   const total = chunks.length;
@@ -642,7 +645,7 @@ async function incrementDailyBroadcast(userId) {
   return record.count;
 }
 
-// ==================== BullMQ Worker - PLAIN TEXT BROADCAST ====================
+// ==================== BullMQ Worker ====================
 async function processBroadcast(job) {
   const { userId, message, broadcastId } = job.data;
 
@@ -651,8 +654,9 @@ async function processBroadcast(job) {
     throw new Error('Telegram bot not connected');
   }
 
-  const cleanMessage = cleanPlainTextMessage(message);
-  const chunks = splitTelegramMessage(cleanMessage);
+  const telegramReadyMessage = textToTelegramHtml(message);
+
+  const chunks = splitTelegramMessage(telegramReadyMessage);
 
   const targets = await Contact.find({
     userId,
@@ -675,8 +679,7 @@ async function processBroadcast(job) {
     const sendPromises = batch.map(async (target) => {
       try {
         for (const chunk of chunks) {
-          // Plain text mode - NO parse_mode!
-          await bot.telegram.sendMessage(target.telegramChatId, chunk);
+          await bot.telegram.sendMessage(target.telegramChatId, chunk, { parse_mode: 'HTML' });
         }
         sent++;
       } catch (err) {
@@ -700,22 +703,21 @@ async function processBroadcast(job) {
     }
   }
 
-  // Send report (also in plain text)
+  // Send report
   const user = await User.findOne({ id: userId });
-  let reportText = broadcastId ? 'Scheduled Broadcast Report\n\n' : 'Broadcast Report\n\n';
-  
+  let reportText = broadcastId ? '<b>Scheduled Broadcast Report</b>\n\n' : '<b>Broadcast Report</b>\n\n';
   if (total === 0) {
     reportText += 'No subscribed contacts with Telegram connected.';
   } else {
-    const emoji = failed === 0 ? '✅' : '⚠️';
-    reportText += `\( {emoji} \){sent} of ${total} delivered.\n`;
-    if (failed > 0) reportText += `${failed} failed.`;
+    const emoji = failed === 0 ? 'âœ…' : 'âš ï¸';
+    reportText += '(' + emoji + ' <b>' + sent + ' of ' + total + '</b> delivered.\n';
+    if (failed > 0) reportText += failed + ' failed.';
   }
-  reportText += `\n\nTime: ${new Date().toLocaleString()}`;
+  reportText += '\n\nTime: ' + new Date().toLocaleString();
 
   if (user && user.isTelegramConnected && user.telegramChatId && activeBots.has(userId)) {
     try {
-      await bot.telegram.sendMessage(user.telegramChatId, reportText);
+      await bot.telegram.sendMessage(user.telegramChatId, reportText, { parse_mode: 'HTML' });
     } catch (err) {
       console.error('Failed to send report to user ' + userId, err);
     }
@@ -747,10 +749,10 @@ worker.on('failed', async (job, err) => {
   if (user && user.isTelegramConnected && user.telegramChatId && activeBots.has(userId)) {
     const bot = activeBots.get(userId);
     const text = broadcastId 
-      ? `Scheduled Broadcast Failed\n\nFailed after retries.\nError: ${err.message}`
-      : `Broadcast Failed\n\nFailed after retries.\nError: ${err.message}`;
+      ? '<b>Scheduled Broadcast Failed</b>\n\nFailed after retries.\nError: ' + err.message
+      : '<b>Broadcast Failed</b>\n\nFailed after retries.\nError: ' + err.message;
     try {
-      await bot.telegram.sendMessage(user.telegramChatId, text);
+      await bot.telegram.sendMessage(user.telegramChatId, text, { parse_mode: 'HTML' });
     } catch {}
   }
 });
@@ -843,12 +845,12 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
 
     if (!response.data.ok) {
       return res.status(400).json({ 
-        error: 'Invalid bot token – Telegram rejected it: ' + (response.data.description || 'Unauthorized') 
+        error: 'Invalid bot token â€“ Telegram rejected it: ' + (response.data.description || 'Unauthorized') 
       });
     }
 
     if (!response.data.result || !response.data.result.username) {
-      return res.status(400).json({ error: 'Invalid response – missing bot username' });
+      return res.status(400).json({ error: 'Invalid response â€“ missing bot username' });
     }
 
     const botUsername = response.data.result.username.replace(/^@/, '');
@@ -872,12 +874,12 @@ app.post('/api/auth/connect-telegram', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Telegram connect error:', err.message);
     if (err.code === 'ETIMEDOUT') {
-      return res.status(500).json({ error: 'Request to Telegram timed out – try again' });
+      return res.status(500).json({ error: 'Request to Telegram timed out â€“ try again' });
     }
     if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      return res.status(500).json({ error: 'Cannot reach Telegram API – check your server internet' });
+      return res.status(500).json({ error: 'Cannot reach Telegram API â€“ check your server internet' });
     }
-    res.status(500).json({ error: 'Failed to validate bot token – network issue' });
+    res.status(500).json({ error: 'Failed to validate bot token â€“ network issue' });
   }
 });
 
@@ -899,12 +901,12 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
 
     if (!response.data.ok) {
       return res.status(400).json({ 
-        error: 'Invalid new token – Telegram rejected it: ' + (response.data.description || 'Unauthorized') 
+        error: 'Invalid new token â€“ Telegram rejected it: ' + (response.data.description || 'Unauthorized') 
       });
     }
 
     if (!response.data.result || !response.data.result.username) {
-      return res.status(400).json({ error: 'Invalid response – missing bot username' });
+      return res.status(400).json({ error: 'Invalid response â€“ missing bot username' });
     }
 
     const botUsername = response.data.result.username.replace(/^@/, '');
@@ -938,9 +940,9 @@ app.post('/api/auth/change-bot-token', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Change bot token error:', err.message);
     if (err.code === 'ETIMEDOUT') {
-      return res.status(500).json({ error: 'Request to Telegram timed out – try again' });
+      return res.status(500).json({ error: 'Request to Telegram timed out â€“ try again' });
     }
-    res.status(500).json({ error: 'Failed to validate new token – network issue' });
+    res.status(500).json({ error: 'Failed to validate new token â€“ network issue' });
   }
 });
 
@@ -975,7 +977,8 @@ async function send2FACodeViaBot(user, code) {
   try {
     await activeBots.get(user.id).telegram.sendMessage(
       user.telegramChatId,
-      `Security Alert – Password Reset\n\nYour 6-digit code:\n\n${code}\n\nValid for 10 minutes.`
+      'Security Alert â€“ Password Reset\n\nYour 6-digit code:\n\n<b>' + code + '</b>\n\nValid for 10 minutes.',
+      { parse_mode: 'HTML' }
     );
     return true;
   } catch (err) {
@@ -1128,7 +1131,7 @@ app.post('/api/subscription/webhook', async (req, res) => {
 });
 
 app.get('/subscription-success', (req, res) => {
-  res.send('<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Payment Successful</title>\n  <style>\n    body{font-family:system-ui,sans-serif;background:#0a0a0a;color:#00ff41;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}\n    .box{background:#111;padding:60px;border-radius:20px;text-align:center;box-shadow:0 0 30px rgba(0,255,65,0.2);}\n    h1{margin:0 0 20px;font-size:3em;color:#00ff41;}\n    p{font-size:1.3em;margin:20px 0;line-height:1.6;}\n    a{display:inline-block;margin-top:30px;padding:14px 32px;background:#00ff41;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;font-size:1.1em;}\n    a:hover{background:#00cc33;}\n  </style>\n</head>\n<body>\n  <div class="box">\n    <h1>✓ Payment Successful!</h1>\n    <p>Your subscription is now <strong>active</strong>.</p>\n    <p>You have unlimited broadcasts, landing pages, and forms.</p>\n    <p><a href="/">← Return to Dashboard</a></p>\n  </div>\n</body>\n</html>');
+  res.send('<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <title>Payment Successful</title>\n  <style>\n    body{font-family:system-ui,sans-serif;background:#0a0a0a;color:#00ff41;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}\n    .box{background:#111;padding:60px;border-radius:20px;text-align:center;box-shadow:0 0 30px rgba(0,255,65,0.2);}\n    h1{margin:0 0 20px;font-size:3em;color:#00ff41;}\n    p{font-size:1.3em;margin:20px 0;line-height:1.6;}\n    a{display:inline-block;margin-top:30px;padding:14px 32px;background:#00ff41;color:#000;font-weight:bold;text-decoration:none;border-radius:8px;font-size:1.1em;}\n    a:hover{background:#00cc33;}\n  </style>\n</head>\n<body>\n  <div class="box">\n    <h1>âœ“ Payment Successful!</h1>\n    <p>Your subscription is now <strong>active</strong>.</p>\n    <p>You have unlimited broadcasts, landing pages, and forms.</p>\n    <p><a href="/">â† Return to Dashboard</a></p>\n  </div>\n</body>\n</html>');
 });
 
 // ==================== CACHED HIGH-READ ENDPOINTS ====================
@@ -1493,7 +1496,7 @@ app.post('/api/contacts/delete', authenticateToken, async (req, res) => {
   res.json({ success: true, deletedCount: result.deletedCount });
 });
 
-// ==================== BROADCASTING - PLAIN TEXT ====================
+// ==================== BROADCASTING ====================
 app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
   const { message } = req.body;
   if (!message || !message.trim()) return res.status(400).json({ error: 'Message required' });
@@ -1508,11 +1511,11 @@ app.post('/api/broadcast/now', authenticateToken, async (req, res) => {
     return res.status(403).json({ error: 'Daily broadcast limit reached.' });
   }
 
-  const cleanMessage = cleanPlainTextMessage(message.trim());
+  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
 
   await broadcastQueue.add('send-broadcast', {
     userId: req.user.id,
-    message: cleanMessage
+    message: sanitizedMessage
   }, {
     attempts: 4,
     backoff: { type: 'exponential', delay: 5000 }
@@ -1543,13 +1546,13 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Invalid future time' });
   }
 
-  const cleanMessage = cleanPlainTextMessage(message.trim());
+  const sanitizedMessage = sanitizeTelegramHtml(message.trim());
   const broadcastId = uuidv4();
 
-  await ScheduledBroadcast.create({
+  const broadcast = await ScheduledBroadcast.create({
     broadcastId,
     userId: req.user.id,
-    message: cleanMessage,
+    message: sanitizedMessage,
     recipients,
     scheduledTime: time,
     status: 'pending'
@@ -1559,7 +1562,7 @@ app.post('/api/broadcast/schedule', authenticateToken, async (req, res) => {
 
   await broadcastQueue.add('send-broadcast', {
     userId: req.user.id,
-    message: cleanMessage,
+    message: sanitizedMessage,
     broadcastId
   }, {
     jobId: broadcastId,
@@ -1615,7 +1618,7 @@ app.patch('/api/broadcast/scheduled/:broadcastId', authenticateToken, async (req
     if (message.trim().length > MAX_MSG_LENGTH) {
       return res.status(400).json({ error: `Message exceeds ${MAX_MSG_LENGTH} character limit.` });
     }
-    task.message = cleanPlainTextMessage(message.trim());
+    task.message = sanitizeTelegramHtml(message.trim());
     needsUpdate = true;
   }
   if (recipients) {
@@ -1741,7 +1744,7 @@ app.post('/admin-limits', async (req, res) => {
   const newForms = parseInt(max_forms);
 
   if (isNaN(newDaily) || isNaN(newPages) || isNaN(newForms) || newDaily < 1 || newPages < 1 || newForms < 1) {
-    return res.send('<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Invalid Values<br>All limits must be ≥ 1</h1></body></html>');
+    return res.send('<html><body style="background:#121212;color:#f44336;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;font-family:sans-serif;text-align:center;"><h1>Invalid Values<br>All limits must be â‰¥ 1</h1></body></html>');
   }
 
   try {
@@ -1780,7 +1783,7 @@ app.post('/admin-limits', async (req, res) => {
       '    <p><strong>Daily Broadcasts:</strong> ' + newDaily + '<br>\n' +
       '       <strong>Max Pages:</strong> ' + newPages + '<br>\n' +
       '       <strong>Max Forms:</strong> ' + newForms + '</p>\n' +
-      '    <p><a href="/admin-limits">← Back to Control Panel</a></p>\n' +
+      '    <p><a href="/admin-limits">â† Back to Control Panel</a></p>\n' +
       '  </div>\n' +
       '</body>\n' +
       '</html>');
@@ -1811,7 +1814,7 @@ async function loadAdminSettings() {
       maxLandingPages: settings.maxLandingPages,
       maxForms: settings.maxForms
     };
-    console.log('✅ Admin settings loaded from DB:', adminSettingsCache);
+    console.log('âœ… Admin settings loaded from DB:', adminSettingsCache);
   } catch (err) {
     console.error('Failed to load admin settings:', err);
   }
@@ -1849,6 +1852,6 @@ app.use((req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log('\nSENDEM SERVER — FULL VERSION WITH BullMQ + Redis BROADCAST QUEUE (PLAIN TEXT MODE)');
+  console.log('\nSENDEM SERVER â€” FULL VERSION WITH BullMQ + Redis BROADCAST QUEUE');
   console.log('Server running on port ' + PORT + ' | Domain: https://' + DOMAIN + '\n');
 });
