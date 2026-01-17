@@ -392,7 +392,6 @@ function launchUserBot(user) {
     await ctx.replyWithHTML('<b>Sendm 2FA Status</b>\nAccount: <code>' + user.email + '</code>\nStatus: <b>' + (user.isTelegramConnected ? 'Connected' : 'Not Connected') + '</b>');
   });
 
-  // Using string concatenation for webhook path and URL
   const webhookPath = '/webhook/' + WEBHOOK_SECRET + '/' + user.id;
   const webhookUrl = 'https://' + DOMAIN + webhookPath;
 
@@ -759,6 +758,81 @@ worker.on('failed', async function(job, err) {
     } catch {}
   }
 });
+
+// ==================== SCHEDULED BROADCAST RECOVERY AFTER RESTART ====================
+async function recoverLostScheduledBroadcasts() {
+  console.log('🔄 Starting recovery of scheduled broadcasts after server restart...');
+
+  const now = new Date();
+
+  // Find pending scheduled broadcasts that are still in the future
+  const pendingFuture = await ScheduledBroadcast.find({
+    status: 'pending',
+    scheduledTime: { $gt: now }
+  }).lean();
+
+  if (pendingFuture.length === 0) {
+    console.log('✓ No pending future scheduled broadcasts need recovery');
+    return;
+  }
+
+  console.log(`Found ${pendingFuture.length} scheduled broadcast(s) to recover`);
+
+  let recovered = 0;
+  let alreadyExists = 0;
+
+  for (const task of pendingFuture) {
+    const jobId = task.broadcastId;
+
+    // Safety check - don't add duplicate job if it somehow still exists
+    const existing = await broadcastQueue.getJob(jobId);
+    if (existing) {
+      alreadyExists++;
+      continue;
+    }
+
+    const delayMs = task.scheduledTime.getTime() - Date.now();
+
+    if (delayMs <= 1000) {
+      // Almost due → send immediately
+      await broadcastQueue.add(
+        'send-broadcast',
+        {
+          userId: task.userId,
+          message: task.message,
+          broadcastId: task.broadcastId
+        },
+        {
+          jobId: task.broadcastId,
+          attempts: 4,
+          backoff: { type: 'exponential', delay: 5000 }
+        }
+      );
+    } else {
+      await broadcastQueue.add(
+        'send-broadcast',
+        {
+          userId: task.userId,
+          message: task.message,
+          broadcastId: task.broadcastId
+        },
+        {
+          jobId: task.broadcastId,
+          delay: delayMs,
+          attempts: 4,
+          backoff: { type: 'exponential', delay: 5000 }
+        }
+      );
+    }
+
+    recovered++;
+  }
+
+  console.log(
+    `✓ Recovery completed: ${recovered} broadcast(s) re-queued, ` +
+    `${alreadyExists} were already present in queue`
+  );
+}
 
 // ==================== JWT AUTH ====================
 const authenticateToken = async function(req, res, next) {
@@ -1841,11 +1915,17 @@ async function loadAdminSettings() {
 
 mongoose.connection.once('open', async function() {
   await loadAdminSettings();
+
   const usersWithBots = await User.find({ telegramBotToken: { $exists: true, $ne: null } });
   for (const user of usersWithBots) {
     launchUserBot(user);
   }
   console.log('Launched ' + usersWithBots.length + ' bots in pure webhook mode');
+
+  // Recover scheduled broadcasts that were lost during restart
+  await recoverLostScheduledBroadcasts();
+
+  console.log('Startup sequence completed');
 });
 
 process.on('SIGTERM', async function() {
