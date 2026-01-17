@@ -52,7 +52,7 @@ const MONTHLY_PRICE_KOBO = 150000; // ₦5,000 in kobo
 // Batching config
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 8000;
-const MAX_MSG_LENGTH = 450;
+const MAX_MSG_LENGTH = 4000;
 
 // Redis + BullMQ setup – FIXED FOR BULLMQ v5+ COMPATIBILITY
 let redisConnection;
