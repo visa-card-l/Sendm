@@ -765,7 +765,6 @@ async function recoverLostScheduledBroadcasts() {
 
   const now = new Date();
 
-  // Find pending scheduled broadcasts that are still in the future
   const pendingFuture = await ScheduledBroadcast.find({
     status: 'pending',
     scheduledTime: { $gt: now }
@@ -776,7 +775,7 @@ async function recoverLostScheduledBroadcasts() {
     return;
   }
 
-  console.log(`Found ${pendingFuture.length} scheduled broadcast(s) to recover`);
+  console.log('Found ' + pendingFuture.length + ' scheduled broadcast(s) to recover');
 
   let recovered = 0;
   let alreadyExists = 0;
@@ -784,7 +783,6 @@ async function recoverLostScheduledBroadcasts() {
   for (const task of pendingFuture) {
     const jobId = task.broadcastId;
 
-    // Safety check - don't add duplicate job if it somehow still exists
     const existing = await broadcastQueue.getJob(jobId);
     if (existing) {
       alreadyExists++;
@@ -794,7 +792,6 @@ async function recoverLostScheduledBroadcasts() {
     const delayMs = task.scheduledTime.getTime() - Date.now();
 
     if (delayMs <= 1000) {
-      // Almost due → send immediately
       await broadcastQueue.add(
         'send-broadcast',
         {
@@ -829,8 +826,8 @@ async function recoverLostScheduledBroadcasts() {
   }
 
   console.log(
-    `✓ Recovery completed: ${recovered} broadcast(s) re-queued, ` +
-    `${alreadyExists} were already present in queue`
+    '✓ Recovery completed: ' + recovered + ' broadcast(s) re-queued, ' +
+    alreadyExists + ' were already present in queue'
   );
 }
 
@@ -915,49 +912,65 @@ app.post('/api/auth/connect-telegram', authenticateToken, async function(req, re
     return res.status(400).json({ error: 'This bot is already linked to another account.' });
   }
 
-  try {
-    const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe', {
-      timeout: 10000
-    });
-
-    if (!response.data.ok) {
-      return res.status(400).json({ 
-        error: 'Invalid bot token – Telegram rejected it: ' + (response.data.description || 'Unauthorized') 
+  // Retry validation for network issues
+  let botInfo;
+  let attempts = 0;
+  const maxAttempts = 5;
+  while (attempts < maxAttempts) {
+    attempts++;
+    try {
+      const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe', {
+        timeout: 15000
       });
+      if (!response.data.ok) {
+        return res.status(400).json({ 
+          error: 'Invalid bot token – Telegram rejected it: ' + (response.data.description || 'Unauthorized') 
+        });
+      }
+      botInfo = response.data.result;
+      if (!botInfo || !botInfo.username) {
+        return res.status(400).json({ error: 'Invalid response – missing bot username' });
+      }
+      break;
+    } catch (err) {
+      console.warn('Bot token validation attempt ' + attempts + '/' + maxAttempts + ' failed: ' + (err.message || err.code));
+      if (attempts >= maxAttempts) {
+        return res.status(500).json({ error: 'Network error validating bot token. Please try again later.' });
+      }
+      await new Promise(r => setTimeout(r, 5000));
     }
-
-    if (!response.data.result || !response.data.result.username) {
-      return res.status(400).json({ error: 'Invalid response – missing bot username' });
-    }
-
-    const botUsername = response.data.result.username.replace(/^@/, '');
-
-    req.user.telegramBotToken = token;
-    req.user.botUsername = botUsername;
-    req.user.isTelegramConnected = false;
-    req.user.telegramChatId = null;
-    await req.user.save();
-
-    launchUserBot(req.user);
-
-    const startLink = 'https://t.me/' + botUsername + '?start=' + req.user.id;
-
-    res.json({
-      success: true,
-      message: 'Bot connected!',
-      botUsername: '@' + botUsername,
-      startLink: startLink
-    });
-  } catch (err) {
-    console.error('Telegram connect error:', err.message);
-    if (err.code === 'ETIMEDOUT') {
-      return res.status(500).json({ error: 'Request to Telegram timed out – try again' });
-    }
-    if (err.code === 'ENOTFOUND' || err.code === 'ECONNREFUSED') {
-      return res.status(500).json({ error: 'Cannot reach Telegram API – check your server internet' });
-    }
-    res.status(500).json({ error: 'Failed to validate bot token – network issue' });
   }
+
+  const botUsername = botInfo.username.replace(/^@/, '');
+
+  // Clean old webhook if changing from a different token
+  if (req.user.telegramBotToken && req.user.telegramBotToken !== token) {
+    try {
+      await axios.post('https://api.telegram.org/bot' + req.user.telegramBotToken + '/deleteWebhook', {
+        drop_pending_updates: true
+      }, { timeout: 10000 });
+      console.log('Old webhook cleared before connecting new bot for user ' + req.user.id);
+    } catch (err) {
+      console.warn('Failed to clear old webhook (may be invalid token): ' + err.message);
+    }
+  }
+
+  req.user.telegramBotToken = token;
+  req.user.botUsername = botUsername;
+  req.user.isTelegramConnected = false;
+  req.user.telegramChatId = null;
+  await req.user.save();
+
+  launchUserBot(req.user);
+
+  const startLink = 'https://t.me/' + botUsername + '?start=' + req.user.id;
+
+  res.json({
+    success: true,
+    message: 'Bot connected!',
+    botUsername: '@' + botUsername,
+    startLink: startLink
+  });
 });
 
 app.post('/api/auth/change-bot-token', authenticateToken, async function(req, res) {
@@ -971,59 +984,80 @@ app.post('/api/auth/change-bot-token', authenticateToken, async function(req, re
     return res.status(400).json({ error: 'This bot is already linked to another account.' });
   }
 
-  try {
-    const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe', {
-      timeout: 10000
-    });
-
-    if (!response.data.ok) {
-      return res.status(400).json({ 
-        error: 'Invalid new token – Telegram rejected it: ' + (response.data.description || 'Unauthorized') 
+  // Retry validation for network issues
+  let botInfo;
+  let attempts = 0;
+  const maxAttempts = 5;
+  while (attempts < maxAttempts) {
+    attempts++;
+    try {
+      const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe', {
+        timeout: 15000
       });
-    }
-
-    if (!response.data.result || !response.data.result.username) {
-      return res.status(400).json({ error: 'Invalid response – missing bot username' });
-    }
-
-    const botUsername = response.data.result.username.replace(/^@/, '');
-
-    if (req.user.telegramBotToken && req.user.telegramBotToken !== token) {
-      try {
-        const oldBot = new Telegraf(req.user.telegramBotToken);
-        await oldBot.telegram.deleteWebhook({ drop_pending_updates: true });
-        console.log('Old webhook deleted successfully for user ' + req.user.id);
-      } catch (err) {
-        console.warn('Failed to delete old webhook (possibly invalid old token): ' + err.message);
+      if (!response.data.ok) {
+        return res.status(400).json({ 
+          error: 'Invalid new token – Telegram rejected it: ' + (response.data.description || 'Unauthorized') 
+        });
       }
+      botInfo = response.data.result;
+      if (!botInfo || !botInfo.username) {
+        return res.status(400).json({ error: 'Invalid response – missing bot username' });
+      }
+      break;
+    } catch (err) {
+      console.warn('New bot token validation attempt ' + attempts + '/' + maxAttempts + ' failed: ' + (err.message || err.code));
+      if (attempts >= maxAttempts) {
+        return res.status(500).json({ error: 'Network error validating new bot token. Please try again later.' });
+      }
+      await new Promise(r => setTimeout(r, 5000));
     }
-
-    req.user.telegramBotToken = token;
-    req.user.botUsername = botUsername;
-    req.user.isTelegramConnected = false;
-    req.user.telegramChatId = null;
-    await req.user.save();
-
-    launchUserBot(req.user);
-
-    const startLink = 'https://t.me/' + botUsername + '?start=' + req.user.id;
-
-    res.json({
-      success: true,
-      message: 'Bot token updated! Please send /start to the new bot to reconnect 2FA.',
-      botUsername: '@' + botUsername,
-      startLink: startLink
-    });
-  } catch (err) {
-    console.error('Change bot token error:', err.message);
-    if (err.code === 'ETIMEDOUT') {
-      return res.status(500).json({ error: 'Request to Telegram timed out – try again' });
-    }
-    res.status(500).json({ error: 'Failed to validate new token – network issue' });
   }
+
+  const botUsername = botInfo.username.replace(/^@/, '');
+
+  // Always clear old webhook when changing token
+  if (req.user.telegramBotToken) {
+    try {
+      await axios.post('https://api.telegram.org/bot' + req.user.telegramBotToken + '/deleteWebhook', {
+        drop_pending_updates: true
+      }, { timeout: 10000 });
+      console.log('Old webhook cleared on bot token change for user ' + req.user.id);
+    } catch (err) {
+      console.warn('Failed to clear old webhook on token change: ' + err.message);
+    }
+  }
+
+  req.user.telegramBotToken = token;
+  req.user.botUsername = botUsername;
+  req.user.isTelegramConnected = false;
+  req.user.telegramChatId = null;
+  await req.user.save();
+
+  launchUserBot(req.user);
+
+  const startLink = 'https://t.me/' + botUsername + '?start=' + req.user.id;
+
+  res.json({
+    success: true,
+    message: 'Bot token updated! Please send /start to the new bot to reconnect 2FA.',
+    botUsername: '@' + botUsername,
+    startLink: startLink
+  });
 });
 
 app.post('/api/auth/disconnect-telegram', authenticateToken, async function(req, res) {
+  // Always clear webhook before disconnecting
+  if (req.user.telegramBotToken) {
+    try {
+      await axios.post('https://api.telegram.org/bot' + req.user.telegramBotToken + '/deleteWebhook', {
+        drop_pending_updates: true
+      }, { timeout: 10000 });
+      console.log('Webhook cleared on disconnect for user ' + req.user.id);
+    } catch (err) {
+      console.warn('Failed to clear webhook on disconnect: ' + err.message);
+    }
+  }
+
   if (activeBots.has(req.user.id)) {
     activeBots.get(req.user.id).stop('Disconnected');
     activeBots.delete(req.user.id);
@@ -1035,7 +1069,7 @@ app.post('/api/auth/disconnect-telegram', authenticateToken, async function(req,
   req.user.isTelegramConnected = false;
   await req.user.save();
 
-  res.json({ success: true, message: 'Telegram disconnected' });
+  res.json({ success: true, message: 'Telegram disconnected successfully. You can now connect a fresh bot without any blockage.' });
 });
 
 app.get('/api/auth/bot-status', authenticateToken, function(req, res) {
@@ -1922,7 +1956,6 @@ mongoose.connection.once('open', async function() {
   }
   console.log('Launched ' + usersWithBots.length + ' bots in pure webhook mode');
 
-  // Recover scheduled broadcasts that were lost during restart
   await recoverLostScheduledBroadcasts();
 
   console.log('Startup sequence completed');
