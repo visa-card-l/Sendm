@@ -290,9 +290,10 @@ const lastWebhookSetTime = new Map();
 
 // ==================== TELEGRAM BOT MANAGEMENT ====================
 function launchUserBot(user) {
+  // Remove old bot instance without calling .stop() (not needed in pure webhook mode)
   if (activeBots.has(user.id)) {
-    activeBots.get(user.id).stop('Replaced');
     activeBots.delete(user.id);
+    console.log('Removed old bot instance for user ' + user.email + ' without stopping (webhook mode)');
   }
 
   if (!user.telegramBotToken) return;
@@ -429,7 +430,7 @@ function launchUserBot(user) {
       await new Promise(resolve => setTimeout(resolve, 2500));
 
       let attempts = 0;
-      const maxAttempts = 3;
+      const maxAttempts = 5; // Increased attempts for network reliability
 
       while (attempts < maxAttempts) {
         try {
@@ -446,12 +447,15 @@ function launchUserBot(user) {
         } catch (err) {
           attempts++;
           if (err.response && err.response.error_code === 429) {
-            const retryAfter = err.response.parameters?.retry_after || 15;
-            console.warn('Rate limit hit for ' + user.email + ' - waiting ' + (retryAfter + 3) + 's (attempt ' + attempts + '/' + maxAttempts + ')');
-            await new Promise(r => setTimeout(r, (retryAfter + 3) * 1000));
+            const retryAfter = err.response.parameters?.retry_after || 30;
+            console.warn('Rate limit hit for ' + user.email + ' - waiting ' + (retryAfter + 5) + 's (attempt ' + attempts + '/' + maxAttempts + ')');
+            await new Promise(r => setTimeout(r, (retryAfter + 5) * 1000));
           } else {
             console.error('Webhook set FAILED for ' + user.email + ': ' + err.message);
-            throw err;
+            if (attempts >= maxAttempts) {
+              throw err;
+            }
+            await new Promise(r => setTimeout(r, 5000)); // Extra delay on failure
           }
         }
       }
@@ -460,6 +464,7 @@ function launchUserBot(user) {
     } catch (err) {
       console.error('Webhook setup completely failed for ' + user.email + ': ' + err.message);
     } finally {
+      // Always register the bot instance even if webhook failed (it can still handle incoming updates)
       activeBots.set(user.id, bot);
     }
   })();
@@ -915,12 +920,12 @@ app.post('/api/auth/connect-telegram', authenticateToken, async function(req, re
   // Retry validation for network issues
   let botInfo;
   let attempts = 0;
-  const maxAttempts = 5;
+  const maxAttempts = 7; // Increased retries
   while (attempts < maxAttempts) {
     attempts++;
     try {
       const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe', {
-        timeout: 15000
+        timeout: 20000 // Increased timeout
       });
       if (!response.data.ok) {
         return res.status(400).json({ 
@@ -937,18 +942,18 @@ app.post('/api/auth/connect-telegram', authenticateToken, async function(req, re
       if (attempts >= maxAttempts) {
         return res.status(500).json({ error: 'Network error validating bot token. Please try again later.' });
       }
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise(r => setTimeout(r, 8000)); // Longer backoff
     }
   }
 
   const botUsername = botInfo.username.replace(/^@/, '');
 
-  // Clean old webhook if changing from a different token
+  // Clear old webhook if token is different
   if (req.user.telegramBotToken && req.user.telegramBotToken !== token) {
     try {
       await axios.post('https://api.telegram.org/bot' + req.user.telegramBotToken + '/deleteWebhook', {
         drop_pending_updates: true
-      }, { timeout: 10000 });
+      }, { timeout: 20000 });
       console.log('Old webhook cleared before connecting new bot for user ' + req.user.id);
     } catch (err) {
       console.warn('Failed to clear old webhook (may be invalid token): ' + err.message);
@@ -987,12 +992,12 @@ app.post('/api/auth/change-bot-token', authenticateToken, async function(req, re
   // Retry validation for network issues
   let botInfo;
   let attempts = 0;
-  const maxAttempts = 5;
+  const maxAttempts = 7;
   while (attempts < maxAttempts) {
     attempts++;
     try {
       const response = await axios.get('https://api.telegram.org/bot' + token + '/getMe', {
-        timeout: 15000
+        timeout: 20000
       });
       if (!response.data.ok) {
         return res.status(400).json({ 
@@ -1009,18 +1014,18 @@ app.post('/api/auth/change-bot-token', authenticateToken, async function(req, re
       if (attempts >= maxAttempts) {
         return res.status(500).json({ error: 'Network error validating new bot token. Please try again later.' });
       }
-      await new Promise(r => setTimeout(r, 5000));
+      await new Promise(r => setTimeout(r, 8000));
     }
   }
 
   const botUsername = botInfo.username.replace(/^@/, '');
 
-  // Always clear old webhook when changing token
+  // Always clear old webhook on token change
   if (req.user.telegramBotToken) {
     try {
       await axios.post('https://api.telegram.org/bot' + req.user.telegramBotToken + '/deleteWebhook', {
         drop_pending_updates: true
-      }, { timeout: 10000 });
+      }, { timeout: 20000 });
       console.log('Old webhook cleared on bot token change for user ' + req.user.id);
     } catch (err) {
       console.warn('Failed to clear old webhook on token change: ' + err.message);
@@ -1046,20 +1051,20 @@ app.post('/api/auth/change-bot-token', authenticateToken, async function(req, re
 });
 
 app.post('/api/auth/disconnect-telegram', authenticateToken, async function(req, res) {
-  // Always clear webhook before disconnecting
+  // Clear webhook via direct API
   if (req.user.telegramBotToken) {
     try {
       await axios.post('https://api.telegram.org/bot' + req.user.telegramBotToken + '/deleteWebhook', {
         drop_pending_updates: true
-      }, { timeout: 10000 });
+      }, { timeout: 20000 });
       console.log('Webhook cleared on disconnect for user ' + req.user.id);
     } catch (err) {
       console.warn('Failed to clear webhook on disconnect: ' + err.message);
     }
   }
 
+  // Remove bot instance without .stop()
   if (activeBots.has(req.user.id)) {
-    activeBots.get(req.user.id).stop('Disconnected');
     activeBots.delete(req.user.id);
   }
 
