@@ -45,13 +45,13 @@
       flex: 1;
     }
 
-    /* ── Header styling (mirrored from simpler version + more bottom space) ── */
+    /* ── Larger header ── */
     h1 {
-      font-size: 28px;
-      line-height: 1.3;
+      font-size: 38px;                    /* ← noticeably bigger now */
+      line-height: 1.25;
       font-weight: 700;
-      margin: 0 auto 40px;           /* ← increased bottom margin – gives header breathing room */
-      max-width: 90%;                /* helps on mobile – prevents ultra-long lines */
+      margin: 0 auto 48px;               /* more bottom space for larger text */
+      max-width: 92%;
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
@@ -60,10 +60,11 @@
     }
 
     h2 {
-      font-size: 26px;
+      font-size: 32px;                    /* ← bigger but still clearly below h1 */
+      line-height: 1.3;
       font-weight: 700;
-      margin: 0 auto 36px;           /* ← more bottom space for h2 too */
-      max-width: 90%;
+      margin: 0 auto 42px;
+      max-width: 92%;
       color: #1a1a1a;
       text-align: center;
     }
@@ -74,13 +75,13 @@
       color: #374151;
     }
 
-    /* Give extra top spacing to the FIRST block after a header */
+    /* Extra separation after header so it stands alone */
     .content > h1 + *,
     .content > h2 + * {
-      margin-top: 24px !important;   /* ← this creates clear separation after header */
+      margin-top: 28px !important;       /* ← slightly increased push for larger header */
     }
 
-    /* But keep tight chaining between all OTHER consecutive blocks */
+    /* Tight chaining between all other blocks remains unchanged */
     .hero-img + h1,
     .hero-img + h2,
     .hero-img + p,
