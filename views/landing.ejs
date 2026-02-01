@@ -8,128 +8,180 @@
     :root {
       --primary: #1564C0;
       --primary-light: #3485e5;
+      --spacing-xxs: 8px;
+      --spacing-xs: 14px;
+      --spacing-sm: 20px;
+      --spacing-md: 32px;
+      --spacing-lg: 48px;
     }
+
     * {
       margin: 0;
       padding: 0;
       box-sizing: border-box;
     }
+
     body {
       font-family: 'Segoe UI', system-ui, Arial, sans-serif;
       background: #f8f9fa;
-      color: #1a1a1a;
-      line-height: 1.5;
+      color: #1f2937;
+      line-height: 1.6;
     }
+
     .container {
-      max-width: 700px;
+      max-width: 740px;
       margin: 0 auto;
-      padding: 20px;
-      background: #FFFFFF;
-      min-height: 100vh;
-    }
-
-    /* Product card wrapper – each item gets its own card */
-    .product-card {
       background: white;
-      border-radius: 16px;
+      border-radius: 20px;
       overflow: hidden;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.08);
-      margin-bottom: 24px;
-      transition: transform 0.15s ease, box-shadow 0.15s ease;
-    }
-
-    .product-card:hover {
-      transform: translateY(-4px);
-      box-shadow: 0 12px 32px rgba(0,0,0,0.12);
+      box-shadow: 0 10px 40px rgba(0,0,0,0.07);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
 
     .content {
-      padding: 0; /* moved padding to card */
+      padding: 28px 28px 64px;
+      flex: 1;
     }
 
-    /* Image takes full width, tight spacing */
-    .hero-img {
-      width: 100%;
-      height: auto;
-      display: block;
-      object-fit: cover;
-      aspect-ratio: 4 / 3; /* ← adjust this ratio to match your product images */
-    }
-
-    /* Text content – very compact */
-    .product-info {
-      padding: 16px 20px 20px;
-      text-align: left;
-    }
-
+    /* â”€â”€ Much larger & more prominent header â”€â”€ */
     h1 {
-      font-size: 24px;
-      font-weight: 700;
-      margin: 0 0 8px 0;
+      font-size: 48px;                    /* Clearly much bigger than body text */
+      line-height: 1.2;
+      font-weight: 800;                   /* Extra bold for impact */
+      margin: 0 auto 56px;               /* Generous space below large header */
+      max-width: 90%;
+      letter-spacing: -0.8px;            /* Slight premium spacing */
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
+      text-align: center;
     }
 
     h2 {
-      font-size: 20px;
-      font-weight: 600;
-      margin: 0 0 6px 0;
+      font-size: 40px;                    /* Still significantly larger than body */
+      line-height: 1.25;
+      font-weight: 700;
+      margin: 0 auto 48px;
+      max-width: 90%;
       color: #1a1a1a;
+      text-align: center;
     }
 
     p {
-      font-size: 15px;
-      color: #555;
-      margin: 0 0 16px 0;
-      line-height: 1.45;
+      margin-bottom: 1.6em;
+      font-size: 1.04rem;                /* ~16-17px â€“ header is now 2.5â€“3Ã— larger */
+      color: #374151;
     }
 
-    /* Button – tight spacing, full-width option */
+    /* Extra breathing room so header stands alone */
+    .content > h1 + *,
+    .content > h2 + * {
+      margin-top: 36px !important;       /* Clear separation after big header */
+    }
+
+    /* Tight chaining between all other (non-header) blocks stays the same */
+    .hero-img + h1,
+    .hero-img + h2,
+    .hero-img + p,
+    h1 + p,
+    h2 + p,
+    p + .cta-wrapper,
+    .cta-wrapper + h2,
+    .cta-wrapper + .hero-img,
+    .cta-wrapper + p,
+    .form-block + .hero-img,
+    .form-block + h2,
+    p + h2,
+    p + .hero-img,
+    p + .form-block,
+    .hero-img + .form-block,
+    .hero-img + .cta-wrapper {
+      margin-top: var(--spacing-xxs) !important;
+    }
+
+    .hero-img {
+      width: 100%;
+      border-radius: 14px;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.11);
+      margin: var(--spacing-sm) 0 var(--spacing-xs);
+    }
+
+    .cta-wrapper {
+      text-align: right;
+      margin: var(--spacing-xs) 0 var(--spacing-sm);
+    }
+
     .cta {
       display: inline-block;
-      padding: 12px 28px;
-      font-size: 15px;
+      padding: 13px 30px;
+      font-size: 1rem;
       font-weight: 600;
       background: var(--primary);
       color: white;
-      border-radius: 50px;
+      border-radius: 999px;
       text-decoration: none;
-      transition: all 0.2s ease;
+      box-shadow: 0 4px 12px rgba(21,100,192,0.2);
+      transition: all 0.22s ease;
     }
 
     .cta:hover {
       background: var(--primary-light);
-      transform: translateY(-1px);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 28px rgba(21,100,192,0.32);
     }
 
-    .cta.full-width {
-      display: block;
-      text-align: center;
-      margin: 12px 0 4px;
+    .form-block {
+      padding: 28px;
+      background: #ffffff;
+      border-radius: 14px;
+      margin: var(--spacing-md) 0;
+      border: 1px solid #e5e7eb;
+      box-shadow: 0 3px 14px rgba(0,0,0,0.04);
     }
 
-    /* Footer remains small */
-    .footer-cta {
-      padding: 32px 20px;
-      text-align: center;
+    .form-block input,
+    .form-block button {
+      width: 100%;
+      padding: 13px 15px;
+      margin: var(--spacing-xxs) 0;
+      border-radius: 10px;
+      border: 1px solid #d1d5db;
+      font-size: 1rem;
     }
 
-    .join-sendmi-btn {
-      padding: 10px 28px;
-      font-size: 14px;
-      background: #0066FF;
+    .form-block button {
+      background: var(--primary);
       color: white;
-      border-radius: 50px;
-      text-decoration: none;
-      box-shadow: 0 3px 12px rgba(0,102,255,0.25);
-      transition: all 0.2s;
+      border: none;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: var(--spacing-xs);
     }
 
-    .join-sendmi-btn:hover {
-      background: #0055dd;
-      transform: translateY(-1px);
+    .footer-cta {
+      padding: 12px 28px;
+      text-align: center;
+      background: #f8fafc;
+      border-top: 1px solid #e5e7eb;
+      font-size: 0.82rem;
+      color: #6b7280;
+    }
+
+    .join-sendmi-link {
+      color: #3b82f6;
+      text-decoration: underline;
+      font-weight: 400;
+      font-size: 0.75rem;
+      transition: color 0.16s ease;
+    }
+
+    .join-sendmi-link:hover,
+    .join-sendmi-link:focus {
+      color: var(--primary);
+      text-decoration-thickness: 2px;
     }
   </style>
 </head>
@@ -156,21 +208,22 @@
             <%- html %>
           <% } %>
         <% } else if (block.type === 'image') { %>
-          <img src="<%= block.src %>" alt="Product" class="hero-img" loading="lazy">
+          <img src="<%= block.src %>" alt="Image" class="hero-img" loading="lazy">
         <% } else if (block.type === 'button') { %>
-          <a href="<%= block.href || '#' %>" 
-             class="cta <%= block.fullWidth ? 'full-width' : '' %>" 
-             <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>>
-            <%= block.text %>
-          </a>
+          <div class="cta-wrapper">
+            <a href="<%= block.href || '#' %>" class="cta" 
+               <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>>
+              <%= block.text %>
+            </a>
+          </div>
         <% } else if (block.type === 'form') { %>
-          <div style="padding: 20px;"><%- block.html %></div>
+          <div class="form-block"><%- block.html %></div>
         <% } %>
       <% }) %>
     </div>
 
     <div class="footer-cta">
-      <a href="https://sendmi.onrender.com" class="join-sendmi-btn" target="_blank" rel="noopener">
+      <a href="https://sendmi.onrender.com" class="join-sendmi-link" target="_blank" rel="noopener">
         Join Sendmi
       </a>
     </div>
