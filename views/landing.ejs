@@ -46,13 +46,15 @@
     }
 
     h1 {
-      font-size: 2.1rem;
-      font-weight: 800;
-      line-height: 1.22;
-      margin-bottom: var(--spacing-xs);
+      font-size: 2.3rem;                /* Slightly larger for header impact */
+      font-weight: 900;                 /* Extra bold – very strong header */
+      line-height: 1.18;                /* Tighter for punch */
+      letter-spacing: -0.5px;           /* Subtle premium spacing */
+      margin-bottom: var(--spacing-sm); /* A bit more breathing room below */
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
 
     h2 {
@@ -128,7 +130,7 @@
     }
 
     .footer-cta {
-      padding: 12px 28px;               /* Very minimal padding */
+      padding: 12px 28px;
       text-align: center;
       background: #f8fafc;
       border-top: 1px solid #e5e7eb;
@@ -137,17 +139,17 @@
     }
 
     .join-sendmi-link {
-      color: #3b82f6;                   /* Slightly branded blue */
+      color: #3b82f6;
       text-decoration: underline;
       font-weight: 400;
-      font-size: 0.75rem;               /* Tiny ~12px */
+      font-size: 0.75rem;
       transition: color 0.16s ease;
     }
 
     .join-sendmi-link:hover,
     .join-sendmi-link:focus {
       color: var(--primary);
-      text-decoration-thickness: 2px;   /* Slightly thicker underline on hover */
+      text-decoration-thickness: 2px;
     }
 
     /* Tighter chaining between related elements */
