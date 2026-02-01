@@ -21,8 +21,22 @@
       box-sizing: border-box;
     }
 
+    /* ── Strongest anti-font-boosting / anti-scaling rules ── */
+    html, body {
+      -webkit-text-size-adjust: none !important;
+      text-size-adjust: none !important;
+      -moz-text-size-adjust: none !important;
+      -ms-text-size-adjust: none !important;
+    }
+
+    /* Nuclear anti-boosting fallback (very effective on Android Chrome) */
+    .content,
+    .content * {
+      max-height: 999999px;
+    }
+
     body {
-      font-family: 'Segoe UI', system-ui, Arial, sans-serif;
+      font-family: 'Segoe UI', system-ui, 'Helvetica Neue', Arial, sans-serif;
       background: #f8f9fa;
       color: #1f2937;
       line-height: 1.6;
@@ -45,23 +59,27 @@
       flex: 1;
     }
 
-    /* ── Much larger & more prominent header ── */
+    /* ── Very large, bold, dramatic header ── */
     h1 {
-      font-size: 48px;                    /* Clearly much bigger than body text */
-      line-height: 1.2;
-      font-weight: 800;                   /* Extra bold for impact */
-      margin: 0 auto 56px;               /* Generous space below large header */
-      max-width: 90%;
-      letter-spacing: -0.8px;            /* Slight premium spacing */
+      font-size: clamp(3.5rem, 12vw, 7rem);     /* ≈56px → 112px — huge & responsive */
+      line-height: 1.05;                        /* tight & powerful */
+      font-weight: 900;                         /* maximum boldness */
+      letter-spacing: -1.5px;
+      margin: 0 auto 3.5rem;
+      max-width: 95%;
+      padding: 0 12px;                          /* prevent edge crushing on small phones */
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
       text-align: center;
+      text-shadow: 
+        0 4px 16px rgba(0,0,0,0.22),
+        0 2px 6px rgba(21,100,192,0.25);
     }
 
     h2 {
-      font-size: 40px;                    /* Still significantly larger than body */
+      font-size: 40px;
       line-height: 1.25;
       font-weight: 700;
       margin: 0 auto 48px;
@@ -72,17 +90,17 @@
 
     p {
       margin-bottom: 1.6em;
-      font-size: 1.04rem;                /* ~16-17px – header is now 2.5–3× larger */
+      font-size: 1.04rem;
       color: #374151;
     }
 
-    /* Extra breathing room so header stands alone */
+    /* Extra breathing room after headers */
     .content > h1 + *,
     .content > h2 + * {
-      margin-top: 36px !important;       /* Clear separation after big header */
+      margin-top: 36px !important;
     }
 
-    /* Tight chaining between all other (non-header) blocks stays the same */
+    /* Tight chaining between other blocks */
     .hero-img + h1,
     .hero-img + h2,
     .hero-img + p,
