@@ -21,15 +21,14 @@
       box-sizing: border-box;
     }
 
-    /* Anti-boosting basics */
     html, body {
-      -webkit-text-size-adjust: none;
-      text-size-adjust: none;
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
     }
 
-    /* Targeted fix: moderate max-height on text elements (proven reliable) */
+    /* Critical fix: apply max-height DIRECTLY to text elements (proven most reliable) */
     h1, h2, p {
-      max-height: 8000px;  /* 5000–10000px range works best in recent reports */
+      max-height: 10000px !important;  /* Try 5000px or 15000px if this doesn't stick */
     }
 
     body {
@@ -52,33 +51,31 @@
     }
 
     .content {
-      padding: 32px 24px 64px;  /* Slightly tighter side padding like simple code */
+      padding: 32px 24px 64px;
       flex: 1;
-      text-align: center;       /* Borrowed from simple code – helps consistency */
+      text-align: center;  /* Helps Chrome treat it as constrained like simple version */
     }
 
-    /* Big & bold header – fixed large size + reduced spacing for mobile stability */
     h1 {
-      font-size: 64px;                    /* Large fixed base – test 56–80px range on your phone */
-      /* For mild fluid without vw fights: font-size: min(64px, 90vw); */
-      line-height: 1.1;
+      font-size: 68px !important;          /* Fixed large size – test 60px to 80px on your phone */
+      line-height: 1.08;
       font-weight: 900;
       letter-spacing: -1.2px;
-      margin: 0 auto 2rem;               /* Much smaller bottom margin → mimics simple code */
-      max-width: 92%;
+      margin: 0 auto 32px;                 /* Tighter bottom margin for stability */
+      max-width: 94%;
       padding: 0 16px;
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      text-shadow: 0 4px 12px rgba(0,0,0,0.18);
+      text-shadow: 0 4px 14px rgba(0,0,0,0.2);
     }
 
     h2 {
       font-size: 44px;
       line-height: 1.25;
       font-weight: 700;
-      margin: 0 auto 2.5rem;
+      margin: 0 auto 40px;
       max-width: 90%;
       color: #1a1a1a;
     }
@@ -89,13 +86,11 @@
       color: #374151;
     }
 
-    /* Reduced breathing room after headers to keep layout tighter */
     .content > h1 + *,
     .content > h2 + * {
-      margin-top: 1.5rem !important;
+      margin-top: 28px !important;
     }
 
-    /* Keep your chaining rules, but reduce some margins if needed */
     .hero-img {
       width: 100%;
       border-radius: 14px;
@@ -103,7 +98,6 @@
       margin: var(--spacing-sm) 0 var(--spacing-xs);
     }
 
-    /* ... rest of your CTA, form, footer styles unchanged ... */
     .cta-wrapper {
       text-align: right;
       margin: var(--spacing-xs) 0 var(--spacing-sm);
