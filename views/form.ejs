@@ -74,28 +74,28 @@
       background: var(--primary-light);
     }
 
-    /* Tiny Join Sendmi button at the very bottom */
+    /* ─────────────────────────────────────── */
+    /*   Tiny underlined text footer link       */
+    /* ─────────────────────────────────────── */
     .tiny-footer-cta {
-      margin-top: auto;           /* pushes to bottom */
-      padding-top: 40px;
+      margin-top: auto;           /* pushes to bottom of flex container */
+      padding-top: 48px;
       text-align: center;
+      font-size: 13px;
+      color: #888;
     }
-    .join-sendmi-btn {
-      display: inline-block;
-      padding: 6px 18px;          /* extremely small */
-      font-size: 12px;            /* tiny text */
-      font-weight: 500;
-      background: #0066FF;
-      color: white;
-      border-radius: 30px;
-      text-decoration: none;
-      box-shadow: 0 2px 8px rgba(0, 102, 255, 0.25);
-      transition: all 0.2s ease;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    .join-sendmi-link {
+      color: #666;
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      font-size: 12px;            /* very small */
+      font-weight: 420;
+      transition: color 0.2s ease;
     }
-    .join-sendmi-btn:hover {
-      background: #0055dd;
-      transform: translateY(-1px);
+    .join-sendmi-link:hover,
+    .join-sendmi-link:focus {
+      color: #1564C0;
+      text-decoration-thickness: 1.2px;
     }
   </style>
 </head>
@@ -103,9 +103,14 @@
   <div class="form-container">
     <div id="form-content"></div>
 
-    <!-- Very tiny Join Sendmi button – last element on page -->
+    <!-- Tiny underlined text version -->
     <div class="tiny-footer-cta">
-      <a href="https://sendmi.onrender.com" class="join-sendmi-btn" target="_blank" rel="noopener">
+      <a 
+        href="https://sendmi.onrender.com" 
+        class="join-sendmi-link" 
+        target="_blank" 
+        rel="noopener noreferrer"
+      >
         Join Sendmi
       </a>
     </div>
