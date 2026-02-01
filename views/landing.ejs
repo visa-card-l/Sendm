@@ -8,201 +8,125 @@
     :root {
       --primary: #1564C0;
       --primary-light: #3485e5;
-      --primary-dark: #0f4aa8;
-      --spacing-xxs: 8px;
-      --spacing-xs: 14px;
-      --spacing-sm: 20px;
-      --spacing-md: 32px;
-      --spacing-lg: 48px;
     }
-
     * {
       margin: 0;
       padding: 0;
       box-sizing: border-box;
     }
-
     body {
       font-family: 'Segoe UI', system-ui, Arial, sans-serif;
-      background: #f8f9fa;
-      color: #1f2937;
-      line-height: 1.6;
+      background: #FFFFFF;
+      color: #343a40;
+      line-height: 1.7;
     }
-
     .container {
-      max-width: 740px;
+      max-width: 700px;
       margin: 0 auto;
-      background: white;
-      border-radius: 20px;
+      background: #FFFFFF;
+      border-radius: 24px;
       overflow: hidden;
-      box-shadow: 0 10px 40px rgba(0,0,0,0.07);
-      min-height: 100vh;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.08);
       display: flex;
       flex-direction: column;
+      min-height: 100vh;
     }
-
     .content {
-      padding: 16px 28px 80px; /* much less top padding → header feels huge right away */
+      padding: 20px 50px 60px;
+      text-align: center;
+      background: #FFFFFF;
       flex: 1;
     }
-
     h1 {
-      font-size: 120px;                          /* ← massive on desktop/laptop – this is the main fix */
-      font-weight: 900;
-      line-height: 0.90;                         /* very tight → maximizes visual impact */
-      letter-spacing: -3.5px;                    /* dramatic spread */
-      padding: 20px 0 30px 0;
-      margin: 0 0 60px 0;
-      background: linear-gradient(100deg, var(--primary-dark), var(--primary), var(--primary-light));
-      -webkit-background-clip: text;
-      background-clip: text;
-      -webkit-text-fill-color: transparent;
-      text-shadow: 
-        0 10px 30px rgba(21, 100, 192, 0.45),
-        0 20px 60px rgba(21, 100, 192, 0.25);
-      color: var(--primary);                     /* fallback */
-      text-align: center;                        /* centered looks more heroic */
-    }
-
-    /* Pull h1 up aggressively when right after image */
-    .hero-img + h1 {
-      margin-top: -40px !important;
-      padding-top: 0;
-    }
-
-    h2 {
-      font-size: 2.2rem;
+      font-size: 28px;
+      line-height: 1.3;
       font-weight: 700;
-      margin: var(--spacing-sm) 0 var(--spacing-xxs);
-      color: #111827;
+      margin-bottom: 15px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
-
+    h2 {
+      font-size: 26px;
+      font-weight: 700;
+      margin: 30px 0 15px;
+      color: #1a1a1a;
+    }
     p {
-      margin-bottom: 1.25em;
-      font-size: 1.04rem;
-      color: #374151;
+      margin-bottom: 1.6em; /* Slightly increased for natural paragraph spacing */
     }
-
     .hero-img {
-      width: 100%;
-      border-radius: 14px;
-      box-shadow: 0 10px 28px rgba(0,0,0,0.11);
-      margin: var(--spacing-sm) 0 var(--spacing-xs);
+      max-width: 100%;
+      border-radius: 18px;
+      box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+      margin: 60px 0; /* Reduced from 100px â€“ moderate separation */
     }
-
-    .cta-wrapper {
-      text-align: right;
-      margin: var(--spacing-xs) 0 var(--spacing-sm);
-    }
-
     .cta {
       display: inline-block;
-      padding: 13px 30px;
-      font-size: 1rem;
+      padding: 8px 24px;
+      font-size: 13px;
       font-weight: 600;
       background: var(--primary);
       color: white;
-      border-radius: 999px;
+      border-radius: 50px;
+      box-shadow: 0 3px 10px rgba(21,100,192,0.25);
       text-decoration: none;
-      box-shadow: 0 4px 12px rgba(21,100,192,0.2);
-      transition: all 0.22s ease;
+      margin: 40px 0; /* Reduced from 70px â€“ moderate top/bottom separation */
+      transition: all 0.2s ease;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-
     .cta:hover {
       background: var(--primary-light);
-      transform: translateY(-2px);
-      box-shadow: 0 8px 28px rgba(21,100,192,0.32);
+      transform: translateY(-1px);
+      box-shadow: 0 5px 14px rgba(21,100,192,0.35);
     }
-
     .form-block {
-      padding: 28px;
-      background: #ffffff;
-      border-radius: 14px;
-      margin: var(--spacing-md) 0;
-      border: 1px solid #e5e7eb;
-      box-shadow: 0 3px 14px rgba(0,0,0,0.04);
+      padding: 40px;
+      background: #FFFFFF;
+      border-radius: 20px;
+      margin: 60px 0; /* Reduced from 100px â€“ moderate separation */
+      border: 1px solid #e0e7ff;
     }
-
     .form-block input,
     .form-block button {
       width: 100%;
-      padding: 13px 15px;
-      margin: var(--spacing-xxs) 0;
-      border-radius: 10px;
-      border: 1px solid #d1d5db;
-      font-size: 1rem;
+      padding: 16px;
+      margin: 10px 0;
+      border-radius: 12px;
+      border: 1px solid #ddd;
+      font-size: 16px;
     }
-
     .form-block button {
       background: var(--primary);
       color: white;
       border: none;
       font-weight: 600;
       cursor: pointer;
-      margin-top: var(--spacing-xs);
     }
-
     .footer-cta {
-      padding: 12px 28px;
+      padding: 40px 50px;
       text-align: center;
-      background: #f8fafc;
-      border-top: 1px solid #e5e7eb;
-      font-size: 0.82rem;
-      color: #6b7280;
+      background: #FFFFFF;
+      margin-top: auto;
     }
-
-    .join-sendmi-link {
-      color: #3b82f6;
-      text-decoration: underline;
-      font-weight: 400;
-      font-size: 0.75rem;
-      transition: color 0.16s ease;
+    .join-sendmi-btn {
+      display: inline-block;
+      padding: 8px 24px;
+      font-size: 13px;
+      font-weight: 600;
+      background: #0066FF;
+      color: white;
+      border-radius: 50px;
+      text-decoration: none;
+      box-shadow: 0 3px 10px rgba(0, 102, 255, 0.25);
+      transition: all 0.2s ease;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-
-    .join-sendmi-link:hover,
-    .join-sendmi-link:focus {
-      color: var(--primary);
-      text-decoration-thickness: 2px;
-    }
-
-    /* Chaining overrides – keep small gaps clean */
-    .hero-img + h2,
-    .hero-img + p,
-    h1 + p,
-    h2 + p,
-    p + .cta-wrapper,
-    .cta-wrapper + h2,
-    .cta-wrapper + .hero-img,
-    .cta-wrapper + p,
-    .form-block + .hero-img,
-    .form-block + h2 {
-      margin-top: var(--spacing-xxs) !important;
-    }
-
-    /* Mobile – scale header down but keep it prominent */
-    @media (max-width: 768px) {
-      .content {
-        padding: 16px 24px 70px;
-      }
-      h1 {
-        font-size: 80px;                      /* still very large on tablets */
-        line-height: 0.92;
-        letter-spacing: -2.8px;
-        margin-bottom: 50px;
-      }
-    }
-
-    @media (max-width: 480px) {
-      .content {
-        padding: 12px 20px 60px;
-      }
-      h1 {
-        font-size: 54px;                      /* big but readable on phones */
-        line-height: 0.94;
-        letter-spacing: -2px;
-        padding: 16px 0 24px 0;
-        margin-bottom: 40px;
-      }
+    .join-sendmi-btn:hover {
+      background: #0055dd;
+      transform: translateY(-1px);
+      box-shadow: 0 5px 14px rgba(0, 102, 255, 0.35);
     }
   </style>
 </head>
@@ -231,20 +155,16 @@
         <% } else if (block.type === 'image') { %>
           <img src="<%= block.src %>" alt="Image" class="hero-img" loading="lazy">
         <% } else if (block.type === 'button') { %>
-          <div class="cta-wrapper">
-            <a href="<%= block.href || '#' %>" class="cta" 
-               <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>>
-              <%= block.text %>
-            </a>
-          </div>
+          <a href="<%= block.href || '#' %>" class="cta" <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>><%= block.text %></a>
         <% } else if (block.type === 'form') { %>
           <div class="form-block"><%- block.html %></div>
         <% } %>
       <% }) %>
     </div>
 
+    <!-- Very small button at the absolute bottom -->
     <div class="footer-cta">
-      <a href="https://sendmi.onrender.com" class="join-sendmi-link" target="_blank" rel="noopener">
+      <a href="https://sendmi.onrender.com" class="join-sendmi-btn" target="_blank" rel="noopener">
         Join Sendmi
       </a>
     </div>
