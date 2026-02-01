@@ -42,35 +42,35 @@
     }
 
     .content {
-      padding: 28px 28px 64px;
+      padding: 32px 28px 80px; /* slightly more top padding for balance */
       flex: 1;
     }
 
     h1 {
-      font-size: clamp(3.2rem, 9vw, 5.2rem);   /* VERY tall on desktop – still readable on mobile */
+      font-size: clamp(3.8rem, 11vw, 6.2rem);   /* MUCH larger – very noticeable jump */
       font-weight: 900;
-      line-height: 1.02;                        /* extremely tight – maximizes vertical drama */
-      letter-spacing: -1.4px;
-      padding: 16px 0 20px 0;                   /* internal vertical padding → feels even taller */
-      margin: 0 0 48px 0;                       /* huge space underneath */
+      line-height: 0.98;                         /* extremely tight – maximizes visual height */
+      letter-spacing: -1.6px;
+      padding: 24px 0 28px 0;                    /* internal space → feels even taller */
+      margin: 0 0 60px 0;                        /* huge breathing room below */
       background: linear-gradient(100deg, var(--primary-dark), var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       background-clip: text;
       -webkit-text-fill-color: transparent;
       text-shadow: 
-        0 4px 16px rgba(21, 100, 192, 0.32),
-        0 8px 32px rgba(21, 100, 192, 0.14);
-      color: var(--primary);                    /* fallback */
+        0 6px 20px rgba(21, 100, 192, 0.38),
+        0 12px 40px rgba(21, 100, 192, 0.18);
+      color: var(--primary);                     /* fallback */
     }
 
-    /* Give extra top space when header comes right after image/hero */
+    /* Extra top space when following hero image */
     .hero-img + h1 {
-      margin-top: 24px !important;
-      padding-top: 8px;
+      margin-top: 32px !important;
+      padding-top: 12px;
     }
 
     h2 {
-      font-size: 1.7rem;
+      font-size: 1.9rem;  /* slightly bigger for consistency */
       font-weight: 700;
       margin: var(--spacing-sm) 0 var(--spacing-xxs);
       color: #111827;
@@ -164,7 +164,7 @@
       text-decoration-thickness: 2px;
     }
 
-    /* Tighter chaining for most elements – but we override for h1 above */
+    /* Chaining overrides – h1 has its own rules now */
     .hero-img + h2,
     .hero-img + p,
     h1 + p,
@@ -178,17 +178,17 @@
       margin-top: var(--spacing-xxs) !important;
     }
 
-    /* Mobile adjustments – prevent it from becoming absurdly tall */
+    /* Mobile – cap the insanity a bit */
     @media (max-width: 480px) {
       .content {
-        padding: 24px 20px 48px;
+        padding: 28px 20px 60px;
       }
       h1 {
-        font-size: clamp(2.8rem, 10vw, 4.2rem);
-        line-height: 1.04;
-        letter-spacing: -1px;
-        padding: 12px 0 16px 0;
-        margin-bottom: 40px;
+        font-size: clamp(3.2rem, 12vw, 5.0rem);
+        line-height: 1.0;
+        letter-spacing: -1.2px;
+        padding: 16px 0 20px 0;
+        margin-bottom: 48px;
       }
     }
   </style>
