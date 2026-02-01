@@ -42,35 +42,35 @@
     }
 
     .content {
-      padding: 32px 28px 80px; /* slightly more top padding for balance */
+      padding: 24px 28px 80px; /* reduced top padding a bit so header feels more prominent */
       flex: 1;
     }
 
     h1 {
-      font-size: clamp(3.8rem, 11vw, 6.2rem);   /* MUCH larger – very noticeable jump */
+      font-size: 8rem;                           /* BIG on desktop/laptop — feel free to go 9rem or 10rem */
       font-weight: 900;
-      line-height: 0.98;                         /* extremely tight – maximizes visual height */
-      letter-spacing: -1.6px;
-      padding: 24px 0 28px 0;                    /* internal space → feels even taller */
-      margin: 0 0 60px 0;                        /* huge breathing room below */
+      line-height: 0.94;                         /* tight line height = looks taller */
+      letter-spacing: -2.2px;
+      padding: 28px 0 36px 0;
+      margin: 0 0 70px 0;
       background: linear-gradient(100deg, var(--primary-dark), var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       background-clip: text;
       -webkit-text-fill-color: transparent;
       text-shadow: 
-        0 6px 20px rgba(21, 100, 192, 0.38),
-        0 12px 40px rgba(21, 100, 192, 0.18);
+        0 8px 24px rgba(21, 100, 192, 0.42),
+        0 16px 48px rgba(21, 100, 192, 0.22);
       color: var(--primary);                     /* fallback */
     }
 
-    /* Extra top space when following hero image */
+    /* Pull header up when it follows an image */
     .hero-img + h1 {
-      margin-top: 32px !important;
+      margin-top: -16px !important;
       padding-top: 12px;
     }
 
     h2 {
-      font-size: 1.9rem;  /* slightly bigger for consistency */
+      font-size: 1.9rem;
       font-weight: 700;
       margin: var(--spacing-sm) 0 var(--spacing-xxs);
       color: #111827;
@@ -164,7 +164,7 @@
       text-decoration-thickness: 2px;
     }
 
-    /* Chaining overrides – h1 has its own rules now */
+    /* Chaining overrides */
     .hero-img + h2,
     .hero-img + p,
     h1 + p,
@@ -178,16 +178,31 @@
       margin-top: var(--spacing-xxs) !important;
     }
 
-    /* Mobile – cap the insanity a bit */
-    @media (max-width: 480px) {
+    /* ────────────────────────────────────────────────
+       MOBILE ADJUSTMENTS – make header still big but sane
+    ──────────────────────────────────────────────── */
+    @media (max-width: 768px) {
       .content {
-        padding: 28px 20px 60px;
+        padding: 20px 24px 70px;
       }
       h1 {
-        font-size: clamp(3.2rem, 12vw, 5.0rem);
-        line-height: 1.0;
-        letter-spacing: -1.2px;
-        padding: 16px 0 20px 0;
+        font-size: 5.8rem;
+        line-height: 0.95;
+        letter-spacing: -1.8px;
+        padding: 24px 0 32px 0;
+        margin-bottom: 60px;
+      }
+    }
+
+    @media (max-width: 480px) {
+      .content {
+        padding: 16px 20px 60px;
+      }
+      h1 {
+        font-size: 4.2rem;
+        line-height: 0.96;
+        letter-spacing: -1.4px;
+        padding: 20px 0 28px 0;
         margin-bottom: 48px;
       }
     }
