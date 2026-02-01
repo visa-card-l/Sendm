@@ -21,18 +21,18 @@
       box-sizing: border-box;
     }
 
-    /* ── Strongest anti-font-boosting / anti-scaling rules ── */
-    html, body {
+    /* Anti-font-boosting: text-size-adjust often ignored by Chrome boosting, but include anyway */
+    html, body, h1, h2, p {
       -webkit-text-size-adjust: none !important;
       text-size-adjust: none !important;
       -moz-text-size-adjust: none !important;
       -ms-text-size-adjust: none !important;
     }
 
-    /* Nuclear anti-boosting fallback (very effective on Android Chrome) */
-    .content,
+    /* Core reliable fix: huge max-height disables boosting on unconstrained blocks (Chrome Android behavior) */
+    h1, h2, p,
     .content * {
-      max-height: 999999px;
+      max-height: 999999px !important;     /* or 1000000em / 999999em — works in 2025/2026 reports */
     }
 
     body {
@@ -59,27 +59,27 @@
       flex: 1;
     }
 
-    /* ── Very large, bold, dramatic header ── */
+    /* Huge, bold, dramatic header – should now render at intended size */
     h1 {
-      font-size: clamp(3.5rem, 12vw, 7rem);     /* ≈56px → 112px — huge & responsive */
-      line-height: 1.05;                        /* tight & powerful */
-      font-weight: 900;                         /* maximum boldness */
-      letter-spacing: -1.5px;
+      font-size: clamp(4.5rem, 15vw, 9rem);   /* even larger baseline once boosting is off */
+      line-height: 1.05;
+      font-weight: 900;
+      letter-spacing: -1.8px;
       margin: 0 auto 3.5rem;
       max-width: 95%;
-      padding: 0 12px;                          /* prevent edge crushing on small phones */
+      padding: 0 12px;
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
       text-align: center;
       text-shadow: 
-        0 4px 16px rgba(0,0,0,0.22),
-        0 2px 6px rgba(21,100,192,0.25);
+        0 5px 18px rgba(0,0,0,0.25),
+        0 3px 8px rgba(21,100,192,0.3);
     }
 
     h2 {
-      font-size: 40px;
+      font-size: 44px;
       line-height: 1.25;
       font-weight: 700;
       margin: 0 auto 48px;
@@ -90,11 +90,11 @@
 
     p {
       margin-bottom: 1.6em;
-      font-size: 1.04rem;
+      font-size: 1.08rem;
       color: #374151;
     }
 
-    /* Extra breathing room after headers */
+    /* Breathing room after headers */
     .content > h1 + *,
     .content > h2 + * {
       margin-top: 36px !important;
