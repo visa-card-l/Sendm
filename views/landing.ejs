@@ -45,81 +45,27 @@
       flex: 1;
     }
 
-    /* ── Much larger & more prominent header ── */
     h1 {
-      font-size: 48px;
-      line-height: 1.2;
+      font-size: 2.1rem;
       font-weight: 800;
-      margin: 0 auto 56px;
-      max-width: 90%;
-      letter-spacing: -0.8px;
+      line-height: 1.22;
+      margin-bottom: var(--spacing-xs);
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
-      background-clip: text;
-      text-align: center;
     }
 
     h2 {
-      font-size: 64px;                    /* ←─ greatly increased (was 40px) */
-      line-height: 1.15;                  /* tighter line height for big text */
-      font-weight: 800;                   /* very heavy — matches h1 drama */
-      margin: 0 auto 64px;                /* more vertical breathing room */
-      max-width: 92%;
-      letter-spacing: -1.2px;             /* premium wide spacing on big text */
-      color: #0f172a;                     /* almost black — very strong contrast */
-      text-align: center;
-      background: linear-gradient(135deg, #1e293b, #334155); /* optional dark gradient */
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
+      font-size: 1.7rem;
+      font-weight: 700;
+      margin: var(--spacing-sm) 0 var(--spacing-xxs);
+      color: #111827;
     }
-
-    /* Even more dramatic version — uncomment if you want it insane */
-    /*
-    h2 {
-      font-size: 80px;
-      line-height: 1.05;
-      font-weight: 900;
-      margin: 0 auto 80px;
-      letter-spacing: -2px;
-      background: linear-gradient(90deg, #7c3aed, #ec4899, #f43f5e);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      text-shadow: 0 4px 20px rgba(124,58,237,0.3);
-    }
-    */
 
     p {
-      margin-bottom: 1.6em;
+      margin-bottom: 1.25em;
       font-size: 1.04rem;
       color: #374151;
-    }
-
-    /* Extra breathing room so big headers stand alone */
-    .content > h1 + *,
-    .content > h2 + * {
-      margin-top: 44px !important;
-    }
-
-    /* Tight chaining between other blocks stays the same */
-    .hero-img + h1,
-    .hero-img + h2,
-    .hero-img + p,
-    h1 + p,
-    h2 + p,
-    p + .cta-wrapper,
-    .cta-wrapper + h2,
-    .cta-wrapper + .hero-img,
-    .cta-wrapper + p,
-    .form-block + .hero-img,
-    .form-block + h2,
-    p + h2,
-    p + .hero-img,
-    p + .form-block,
-    .hero-img + .form-block,
-    .hero-img + .cta-wrapper {
-      margin-top: var(--spacing-xxs) !important;
     }
 
     .hero-img {
@@ -129,6 +75,7 @@
       margin: var(--spacing-sm) 0 var(--spacing-xs);
     }
 
+    /* Right-aligned CTA wrapper */
     .cta-wrapper {
       text-align: right;
       margin: var(--spacing-xs) 0 var(--spacing-sm);
@@ -150,7 +97,7 @@
     .cta:hover {
       background: var(--primary-light);
       transform: translateY(-2px);
-      box-shadow: 0 8px 28px rgba(21,100,192,0.32);
+      box-shadow: 0 8px 28px rgba(21,100,192,0.32); /* Slightly stronger on hover */
     }
 
     .form-block {
@@ -182,26 +129,44 @@
     }
 
     .footer-cta {
-      padding: 12px 28px;
+      padding: 28px 28px;
       text-align: center;
       background: #f8fafc;
       border-top: 1px solid #e5e7eb;
-      font-size: 0.82rem;
-      color: #6b7280;
     }
 
-    .join-sendmi-link {
-      color: #3b82f6;
-      text-decoration: underline;
-      font-weight: 400;
-      font-size: 0.75rem;
-      transition: color 0.16s ease;
+    .join-sendmi-btn {
+      display: inline-block;
+      padding: 10px 26px;
+      font-size: 0.94rem;
+      font-weight: 600;
+      background: #0066FF;
+      color: white;
+      border-radius: 999px;
+      text-decoration: none;
+      box-shadow: 0 4px 12px rgba(0,102,255,0.18);
+      transition: all 0.22s ease;
     }
 
-    .join-sendmi-link:hover,
-    .join-sendmi-link:focus {
-      color: var(--primary);
-      text-decoration-thickness: 2px;
+    .join-sendmi-btn:hover {
+      background: #0055dd;
+      transform: translateY(-1px);
+      box-shadow: 0 7px 20px rgba(0,102,255,0.28);
+    }
+
+    /* Tighter chaining between related elements */
+    .hero-img + h1,
+    .hero-img + h2,
+    .hero-img + p,
+    h1 + p,
+    h2 + p,
+    p + .cta-wrapper,
+    .cta-wrapper + h2,
+    .cta-wrapper + .hero-img,
+    .cta-wrapper + p,
+    .form-block + .hero-img,
+    .form-block + h2 {
+      margin-top: var(--spacing-xxs) !important;
     }
   </style>
 </head>
@@ -243,7 +208,7 @@
     </div>
 
     <div class="footer-cta">
-      <a href="https://sendmi.onrender.com" class="join-sendmi-link" target="_blank" rel="noopener">
+      <a href="https://sendmi.onrender.com" class="join-sendmi-btn" target="_blank" rel="noopener">
         Join Sendmi
       </a>
     </div>
