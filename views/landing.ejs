@@ -41,33 +41,48 @@
     }
 
     .content {
-      padding: 28px 28px 64px;
+      padding: 36px 28px 72px;
       flex: 1;
     }
 
-    /* MUCH bigger header */
+    /* 🚀 HERO HEADERS */
+
     h1 {
-      font-size: clamp(64px, 8vw, 88px);
-      line-height: 1.1;
-      font-weight: 900;
-      margin: 0 auto 64px;
-      max-width: 90%;
-      letter-spacing: -1.2px;
-      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      font-size: clamp(72px, 10vw, 112px);
+      line-height: 1.02;
+      font-weight: 950;
+      margin: 0 auto 72px;
+      max-width: 92%;
+      letter-spacing: -1.6px;
+      text-align: center;
+      background: linear-gradient(
+        135deg,
+        #1564C0 0%,
+        #3485e5 60%,
+        #60a5fa 100%
+      );
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      text-align: center;
     }
 
     h2 {
-      font-size: 40px;
-      line-height: 1.25;
-      font-weight: 700;
-      margin: 0 auto 48px;
-      max-width: 90%;
-      color: #1a1a1a;
+      font-size: clamp(48px, 7vw, 72px);
+      line-height: 1.08;
+      font-weight: 900;
+      margin: 0 auto 56px;
+      max-width: 92%;
+      letter-spacing: -1.1px;
       text-align: center;
+      background: linear-gradient(
+        135deg,
+        #1564C0 0%,
+        #3485e5 60%,
+        #60a5fa 100%
+      );
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
     }
 
     p {
@@ -78,7 +93,7 @@
 
     .content > h1 + *,
     .content > h2 + * {
-      margin-top: 36px !important;
+      margin-top: 40px !important;
     }
 
     .hero-img + h1,
@@ -209,7 +224,7 @@
           <img src="<%= block.src %>" alt="Image" class="hero-img" loading="lazy">
         <% } else if (block.type === 'button') { %>
           <div class="cta-wrapper">
-            <a href="<%= block.href || '#' %>" class="cta" 
+            <a href="<%= block.href || '#' %>" class="cta"
                <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>>
               <%= block.text %>
             </a>
