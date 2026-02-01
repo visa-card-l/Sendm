@@ -128,30 +128,26 @@
     }
 
     .footer-cta {
-      padding: 20px 28px;               /* Reduced vertical padding */
+      padding: 12px 28px;               /* Very minimal padding */
       text-align: center;
       background: #f8fafc;
       border-top: 1px solid #e5e7eb;
-      font-size: 0.9rem;
+      font-size: 0.82rem;
+      color: #6b7280;
     }
 
-    .join-sendmi-btn {
-      display: inline-block;
-      padding: 6px 16px;                /* Tiny padding */
-      font-size: 0.82rem;               /* ~13px – small & footer-appropriate */
-      font-weight: 500;                 /* Slightly lighter weight */
-      background: #0066FF;
-      color: white;
-      border-radius: 999px;
-      text-decoration: none;
-      box-shadow: 0 1px 6px rgba(0,102,255,0.15); /* Very subtle shadow */
-      transition: all 0.18s ease;
+    .join-sendmi-link {
+      color: #3b82f6;                   /* Slightly branded blue */
+      text-decoration: underline;
+      font-weight: 400;
+      font-size: 0.75rem;               /* Tiny ~12px */
+      transition: color 0.16s ease;
     }
 
-    .join-sendmi-btn:hover {
-      background: #0055dd;
-      transform: translateY(-1px);
-      box-shadow: 0 3px 10px rgba(0,102,255,0.22);
+    .join-sendmi-link:hover,
+    .join-sendmi-link:focus {
+      color: var(--primary);
+      text-decoration-thickness: 2px;   /* Slightly thicker underline on hover */
     }
 
     /* Tighter chaining between related elements */
@@ -208,7 +204,7 @@
     </div>
 
     <div class="footer-cta">
-      <a href="https://sendmi.onrender.com" class="join-sendmi-btn" target="_blank" rel="noopener">
+      <a href="https://sendmi.onrender.com" class="join-sendmi-link" target="_blank" rel="noopener">
         Join Sendmi
       </a>
     </div>
