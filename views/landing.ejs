@@ -8,6 +8,7 @@
     :root {
       --primary: #1564C0;
       --primary-light: #3485e5;
+      --primary-dark: #0f4aa8;
       --spacing-xxs: 8px;
       --spacing-xs: 14px;
       --spacing-sm: 20px;
@@ -46,15 +47,19 @@
     }
 
     h1 {
-      font-size: 2.3rem;                /* Slightly larger for header impact */
-      font-weight: 900;                 /* Extra bold – very strong header */
-      line-height: 1.18;                /* Tighter for punch */
-      letter-spacing: -0.5px;           /* Subtle premium spacing */
-      margin-bottom: var(--spacing-sm); /* A bit more breathing room below */
-      background: linear-gradient(135deg, var(--primary), var(--primary-light));
+      font-size: clamp(2.6rem, 6.5vw, 3.8rem);  /* scales nicely mobile → desktop */
+      font-weight: 900;
+      line-height: 1.08;                        /* very tight = solid & impactful */
+      letter-spacing: -1.1px;                   /* condensed premium feel */
+      margin: 0 0 36px 0;
+      background: linear-gradient(100deg, var(--primary-dark), var(--primary), var(--primary-light));
       -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
       background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 
+        0 3px 12px rgba(21, 100, 192, 0.28),
+        0 6px 20px rgba(21, 100, 192, 0.12);
+      color: var(--primary);                    /* fallback if gradient fails */
     }
 
     h2 {
@@ -165,6 +170,17 @@
     .form-block + .hero-img,
     .form-block + h2 {
       margin-top: var(--spacing-xxs) !important;
+    }
+
+    /* Small mobile tweak – ensure header doesn't feel cramped */
+    @media (max-width: 480px) {
+      .content {
+        padding: 24px 20px 48px;
+      }
+      h1 {
+        line-height: 1.05;
+        letter-spacing: -0.9px;
+      }
     }
   </style>
 </head>
