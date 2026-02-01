@@ -41,49 +41,54 @@
     }
 
     .content {
-      padding: 36px 28px 72px;
+      padding: 28px 28px 64px;
       flex: 1;
     }
 
-    /* 🚀 HERO HEADERS */
-
+    /* ── Much larger & more prominent header ── */
     h1 {
-      font-size: clamp(72px, 10vw, 112px);
-      line-height: 1.02;
-      font-weight: 950;
-      margin: 0 auto 72px;
-      max-width: 92%;
-      letter-spacing: -1.6px;
-      text-align: center;
-      background: linear-gradient(
-        135deg,
-        #1564C0 0%,
-        #3485e5 60%,
-        #60a5fa 100%
-      );
+      font-size: 48px;
+      line-height: 1.2;
+      font-weight: 800;
+      margin: 0 auto 56px;
+      max-width: 90%;
+      letter-spacing: -0.8px;
+      background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
+      text-align: center;
     }
 
     h2 {
-      font-size: clamp(48px, 7vw, 72px);
-      line-height: 1.08;
-      font-weight: 900;
-      margin: 0 auto 56px;
+      font-size: 64px;                    /* ←─ greatly increased (was 40px) */
+      line-height: 1.15;                  /* tighter line height for big text */
+      font-weight: 800;                   /* very heavy — matches h1 drama */
+      margin: 0 auto 64px;                /* more vertical breathing room */
       max-width: 92%;
-      letter-spacing: -1.1px;
+      letter-spacing: -1.2px;             /* premium wide spacing on big text */
+      color: #0f172a;                     /* almost black — very strong contrast */
       text-align: center;
-      background: linear-gradient(
-        135deg,
-        #1564C0 0%,
-        #3485e5 60%,
-        #60a5fa 100%
-      );
+      background: linear-gradient(135deg, #1e293b, #334155); /* optional dark gradient */
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
     }
+
+    /* Even more dramatic version — uncomment if you want it insane */
+    /*
+    h2 {
+      font-size: 80px;
+      line-height: 1.05;
+      font-weight: 900;
+      margin: 0 auto 80px;
+      letter-spacing: -2px;
+      background: linear-gradient(90deg, #7c3aed, #ec4899, #f43f5e);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      text-shadow: 0 4px 20px rgba(124,58,237,0.3);
+    }
+    */
 
     p {
       margin-bottom: 1.6em;
@@ -91,11 +96,13 @@
       color: #374151;
     }
 
+    /* Extra breathing room so big headers stand alone */
     .content > h1 + *,
     .content > h2 + * {
-      margin-top: 40px !important;
+      margin-top: 44px !important;
     }
 
+    /* Tight chaining between other blocks stays the same */
     .hero-img + h1,
     .hero-img + h2,
     .hero-img + p,
@@ -224,7 +231,7 @@
           <img src="<%= block.src %>" alt="Image" class="hero-img" loading="lazy">
         <% } else if (block.type === 'button') { %>
           <div class="cta-wrapper">
-            <a href="<%= block.href || '#' %>" class="cta"
+            <a href="<%= block.href || '#' %>" class="cta" 
                <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>>
               <%= block.text %>
             </a>
