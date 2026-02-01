@@ -47,21 +47,21 @@
       flex: 1;
     }
 
-    /* ── Even BIGGER & more dominant header ── */
+    /* ── GREATLY INCREASED header size ── only this block changed */
     h1 {
-      font-size: clamp(56px, 11vw, 96px);     /* Much taller & wider feel */
+      font-size: clamp(72px, 14vw, 140px);    /* dramatically larger */
       font-weight: 900;
-      line-height: 1.1;                       /* Tighter → feels taller */
-      letter-spacing: -1.4px;
+      line-height: 1.05;                      /* very tight → maximizes height impact */
+      letter-spacing: -2px;
       text-align: center;
       margin: 0 auto 80px auto;
-      max-width: 96%;
+      max-width: 98%;                         /* almost full width for more presence */
       background: linear-gradient(135deg, var(--primary-dark), var(--primary), #60a5fa, var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      text-shadow: 0 6px 24px rgba(21, 100, 192, 0.28);
-      padding: 0 16px;
+      text-shadow: 0 8px 32px rgba(21, 100, 192, 0.35);
+      padding: 0 20px;
     }
 
     h2 {
