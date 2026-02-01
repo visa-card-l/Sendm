@@ -75,7 +75,6 @@
       margin: var(--spacing-sm) 0 var(--spacing-xs);
     }
 
-    /* Right-aligned CTA wrapper */
     .cta-wrapper {
       text-align: right;
       margin: var(--spacing-xs) 0 var(--spacing-sm);
@@ -97,7 +96,7 @@
     .cta:hover {
       background: var(--primary-light);
       transform: translateY(-2px);
-      box-shadow: 0 8px 28px rgba(21,100,192,0.32); /* Slightly stronger on hover */
+      box-shadow: 0 8px 28px rgba(21,100,192,0.32);
     }
 
     .form-block {
@@ -129,29 +128,30 @@
     }
 
     .footer-cta {
-      padding: 28px 28px;
+      padding: 20px 28px;               /* Reduced vertical padding */
       text-align: center;
       background: #f8fafc;
       border-top: 1px solid #e5e7eb;
+      font-size: 0.9rem;
     }
 
     .join-sendmi-btn {
       display: inline-block;
-      padding: 10px 26px;
-      font-size: 0.94rem;
-      font-weight: 600;
+      padding: 6px 16px;                /* Tiny padding */
+      font-size: 0.82rem;               /* ~13px – small & footer-appropriate */
+      font-weight: 500;                 /* Slightly lighter weight */
       background: #0066FF;
       color: white;
       border-radius: 999px;
       text-decoration: none;
-      box-shadow: 0 4px 12px rgba(0,102,255,0.18);
-      transition: all 0.22s ease;
+      box-shadow: 0 1px 6px rgba(0,102,255,0.15); /* Very subtle shadow */
+      transition: all 0.18s ease;
     }
 
     .join-sendmi-btn:hover {
       background: #0055dd;
       transform: translateY(-1px);
-      box-shadow: 0 7px 20px rgba(0,102,255,0.28);
+      box-shadow: 0 3px 10px rgba(0,102,255,0.22);
     }
 
     /* Tighter chaining between related elements */
