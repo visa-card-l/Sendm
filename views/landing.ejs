@@ -9,8 +9,8 @@
       --primary: #1564C0;
       --primary-light: #3485e5;
       --gap-tiny: 8px;
-      --gap-small: 14px;
-      --gap-after-heading: 28px;
+      --gap-small: 12px;          /* tightened */
+      --gap-after-heading: 12px;  /* much smaller now */
     }
     * {
       margin: 0;
@@ -41,13 +41,13 @@
       display: flex;
       flex-direction: column;
       align-items: flex-end;
-      gap: var(--gap-small);           /* base gap between blocks */
+      gap: var(--gap-small);
     }
     h1 {
       font-size: 28px;
       line-height: 1.3;
       font-weight: 700;
-      margin: 0 auto 40px;              /* bigger space below h1 */
+      margin: 0 auto 16px;              /* ← reduced significantly */
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
@@ -57,7 +57,7 @@
     h2 {
       font-size: 26px;
       font-weight: 700;
-      margin: 0 auto 32px;              /* decent space below h2 */
+      margin: 0 auto 16px;              /* ← reduced significantly */
       color: #1a1a1a;
       align-self: center;
     }
@@ -66,9 +66,9 @@
       max-width: 100%;
     }
 
-    /* Tight chaining — override large gaps when elements follow each other directly */
+    /* Tight chaining rules */
     h1 + *, h2 + * {
-      margin-top: var(--gap-after-heading) !important;
+      margin-top: var(--gap-after-heading) !important;   /* now only 12px after heading */
     }
     .hero-img + *,
     * + .hero-img,
@@ -97,7 +97,7 @@
       border-radius: 50px;
       box-shadow: 0 3px 10px rgba(21,100,192,0.25);
       text-decoration: none;
-      margin: var(--gap-tiny) 0;        /* very small vertical margin */
+      margin: var(--gap-tiny) 0;
       transition: all 0.2s ease;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
