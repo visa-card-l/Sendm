@@ -8,8 +8,8 @@
     :root {
       --primary: #1564C0;
       --primary-light: #3485e5;
-      --spacing-sm: 20px;
-      --spacing-md: 36px;
+      --gap-blocks: 20px;
+      --gap-small: 12px;
     }
     * {
       margin: 0;
@@ -20,94 +20,89 @@
       font-family: 'Segoe UI', system-ui, Arial, sans-serif;
       background: #FFFFFF;
       color: #343a40;
-      line-height: 1.6;
+      line-height: 1.55;
     }
     .container {
-      max-width: 700px;
+      max-width: 720px;
       margin: 0 auto;
       background: #FFFFFF;
-      border-radius: 24px;
+      border-radius: 20px;
       overflow: hidden;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.08);
+      box-shadow: 0 16px 48px rgba(0,0,0,0.07);
       display: flex;
       flex-direction: column;
       min-height: 100vh;
     }
     .content {
-      padding: 32px 50px 48px;
-      background: #FFFFFF;
+      padding: 24px 44px 36px;
       flex: 1;
-
       display: flex;
       flex-direction: column;
       align-items: flex-end;
-      gap: var(--spacing-md);          /* ← main spacing between blocks */
+      gap: var(--gap-blocks);           /* main vertical spacing between different blocks */
     }
     h1 {
-      font-size: 28px;
+      font-size: 26px;
       font-weight: 700;
-      margin-bottom: 12px;
+      margin-bottom: 8px;
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
-      background-clip: text;
       align-self: center;
     }
     h2 {
-      font-size: 24px;
+      font-size: 22px;
       font-weight: 700;
-      margin: 24px 0 12px;
+      margin: 16px 0 8px;
       color: #1a1a1a;
       align-self: center;
     }
     p {
-      margin-bottom: 1.2em;
-      max-width: 100%;
+      margin-bottom: 0.9em;
     }
     .hero-img {
       max-width: 100%;
-      border-radius: 16px;
-      box-shadow: 0 12px 32px rgba(0,0,0,0.12);
+      border-radius: 14px;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.1);
       align-self: center;
-      margin: var(--spacing-sm) 0;
+      margin: 8px 0;                    /* very tight around images */
     }
     .cta {
       display: block;
       width: fit-content;
-      padding: 10px 28px;
-      font-size: 14px;
+      padding: 9px 24px;
+      font-size: 13.5px;
       font-weight: 600;
       background: var(--primary);
       color: white;
       border-radius: 50px;
-      box-shadow: 0 3px 10px rgba(21,100,192,0.25);
+      box-shadow: 0 2px 8px rgba(21,100,192,0.22);
       text-decoration: none;
-      transition: all 0.2s ease;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      margin: 12px 0;                    /* much smaller vertical space around buttons */
+      transition: all 0.18s ease;
+      margin: 4px 0;                    /* almost no extra space around buttons */
     }
     .cta:hover {
       background: var(--primary-light);
       transform: translateY(-1px);
-      box-shadow: 0 6px 16px rgba(21,100,192,0.35);
+      box-shadow: 0 5px 14px rgba(21,100,192,0.32);
     }
     .form-block {
-      padding: 32px;
+      padding: 24px;
       background: #FFFFFF;
-      border-radius: 16px;
+      border-radius: 14px;
       border: 1px solid #e0e7ff;
       width: 100%;
       align-self: stretch;
-      margin: var(--spacing-sm) 0;
+      margin: 6px 0;
     }
     .form-block input,
     .form-block button {
       width: 100%;
-      padding: 14px 16px;
-      margin: 10px 0;
+      padding: 13px 15px;
+      margin: 8px 0;
       border-radius: 10px;
       border: 1px solid #ddd;
-      font-size: 16px;
+      font-size: 15px;
     }
     .form-block button {
       background: var(--primary);
@@ -115,33 +110,33 @@
       border: none;
       font-weight: 600;
       cursor: pointer;
-      transition: background 0.2s;
+      transition: background 0.18s;
     }
     .form-block button:hover {
       background: var(--primary-light);
     }
     .footer-cta {
-      padding: 32px 50px;
+      padding: 24px 44px;
       background: #FFFFFF;
       margin-top: auto;
       text-align: center;
     }
     .join-sendmi-btn {
       display: inline-block;
-      padding: 10px 28px;
-      font-size: 14px;
+      padding: 9px 24px;
+      font-size: 13.5px;
       font-weight: 600;
       background: #0066FF;
       color: white;
       border-radius: 50px;
       text-decoration: none;
-      box-shadow: 0 3px 10px rgba(0, 102, 255, 0.25);
-      transition: all 0.2s ease;
+      box-shadow: 0 2px 8px rgba(0, 102, 255, 0.22);
+      transition: all 0.18s ease;
     }
     .join-sendmi-btn:hover {
       background: #0055dd;
       transform: translateY(-1px);
-      box-shadow: 0 6px 16px rgba(0, 102, 255, 0.35);
+      box-shadow: 0 5px 14px rgba(0, 102, 255, 0.32);
     }
   </style>
 </head>
