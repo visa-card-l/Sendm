@@ -9,8 +9,8 @@
       --primary: #1564C0;
       --primary-light: #3485e5;
       --gap-tiny: 8px;
-      --gap-small: 12px;          /* tightened */
-      --gap-after-heading: 12px;  /* much smaller now */
+      --gap-small: 12px;
+      --gap-after-heading: 12px;
     }
     * {
       margin: 0;
@@ -47,7 +47,7 @@
       font-size: 28px;
       line-height: 1.3;
       font-weight: 700;
-      margin: 0 auto 16px;              /* ← reduced significantly */
+      margin: 0 auto 16px;
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
@@ -57,7 +57,7 @@
     h2 {
       font-size: 26px;
       font-weight: 700;
-      margin: 0 auto 16px;              /* ← reduced significantly */
+      margin: 0 auto 16px;
       color: #1a1a1a;
       align-self: center;
     }
@@ -68,7 +68,7 @@
 
     /* Tight chaining rules */
     h1 + *, h2 + * {
-      margin-top: var(--gap-after-heading) !important;   /* now only 12px after heading */
+      margin-top: var(--gap-after-heading) !important;
     }
     .hero-img + *,
     * + .hero-img,
@@ -99,7 +99,6 @@
       text-decoration: none;
       margin: var(--gap-tiny) 0;
       transition: all 0.2s ease;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
     .cta:hover {
       background: var(--primary-light);
@@ -136,23 +135,24 @@
       text-align: center;
       background: #FFFFFF;
       margin-top: auto;
+      font-size: 13px;           /* slightly smaller than body text */
+      color: #666;
     }
-    .join-sendmi-btn {
-      display: inline-block;
-      padding: 8px 24px;
-      font-size: 13px;
-      font-weight: 600;
-      background: #0066FF;
-      color: white;
-      border-radius: 50px;
-      text-decoration: none;
-      box-shadow: 0 3px 10px rgba(0, 102, 255, 0.25);
-      transition: all 0.2s ease;
+
+    /* New tiny underlined link style for footer */
+    .footer-link {
+      color: var(--primary);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      font-size: 12px;           /* tiny size */
+      font-weight: 500;
+      transition: color 0.2s ease;
     }
-    .join-sendmi-btn:hover {
-      background: #0055dd;
-      transform: translateY(-1px);
-      box-shadow: 0 5px 14px rgba(0, 102, 255, 0.35);
+
+    .footer-link:hover,
+    .footer-link:focus {
+      color: var(--primary-light);
+      text-decoration-thickness: 1.5px; /* optional: slightly thicker on hover */
     }
   </style>
 </head>
@@ -193,7 +193,10 @@
     </div>
 
     <div class="footer-cta">
-      <a href="https://sendmi.onrender.com" class="join-sendmi-btn" target="_blank" rel="noopener">
+      <a href="https://sendmi.onrender.com" 
+         class="footer-link" 
+         target="_blank" 
+         rel="noopener">
         Join Sendmi
       </a>
     </div>
