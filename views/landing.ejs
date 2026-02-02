@@ -8,185 +8,151 @@
     :root {
       --primary: #1564C0;
       --primary-light: #3485e5;
-      --spacing-xxs: 8px;
-      --spacing-xs: 14px;
-      --spacing-sm: 20px;
-      --spacing-md: 32px;
+      --gap-tiny: 8px;
+      --gap-small: 14px;
+      --gap-after-heading: 28px;
     }
-
     * {
       margin: 0;
       padding: 0;
       box-sizing: border-box;
     }
-
     body {
       font-family: 'Segoe UI', system-ui, Arial, sans-serif;
       background: #FFFFFF;
       color: #343a40;
       line-height: 1.55;
     }
-
     .container {
-      max-width: 720px;
+      max-width: 700px;
       margin: 0 auto;
-      background: white;
-      border-radius: 20px;
+      background: #FFFFFF;
+      border-radius: 24px;
       overflow: hidden;
-      box-shadow: 0 12px 44px rgba(0,0,0,0.08);
-      min-height: 100vh;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.08);
       display: flex;
       flex-direction: column;
+      min-height: 100vh;
     }
-
     .content {
-      padding: 24px 40px 48px;
+      padding: 24px 44px 40px;
+      background: #FFFFFF;
       flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: var(--gap-small);           /* base gap between blocks */
     }
-
     h1 {
-      font-size: 32px;
-      line-height: 1.2;
-      font-weight: 800;
-      margin: 0 auto 40px;
-      max-width: 92%;
+      font-size: 28px;
+      line-height: 1.3;
+      font-weight: 700;
+      margin: 0 auto 40px;              /* bigger space below h1 */
       background: linear-gradient(135deg, var(--primary), var(--primary-light));
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      text-align: center;
+      align-self: center;
     }
-
     h2 {
       font-size: 26px;
-      line-height: 1.25;
       font-weight: 700;
-      margin: 0 auto 32px;
-      max-width: 92%;
+      margin: 0 auto 32px;              /* decent space below h2 */
       color: #1a1a1a;
-      text-align: center;
+      align-self: center;
     }
-
     p {
-      margin-bottom: 1.1em;
-      font-size: 1.02rem;
-      color: #374151;
+      margin-bottom: 0.9em;
+      max-width: 100%;
     }
 
-    /* Generous space after big headings */
-    .content > h1 + *,
-    .content > h2 + * {
-      margin-top: 28px !important;
+    /* Tight chaining — override large gaps when elements follow each other directly */
+    h1 + *, h2 + * {
+      margin-top: var(--gap-after-heading) !important;
     }
-
-    /* Very tight chaining between all other blocks */
-    .hero-img + h1,
-    .hero-img + h2,
-    .hero-img + p,
-    h1 + p,
-    h2 + p,
-    p + .cta-wrapper,
-    .cta-wrapper + h2,
-    .cta-wrapper + .hero-img,
-    .cta-wrapper + p,
-    .form-block + .hero-img,
-    .form-block + h2,
-    p + h2,
-    p + .hero-img,
-    p + .form-block,
-    .hero-img + .form-block,
-    .hero-img + .cta-wrapper,
-    .cta-wrapper + .form-block,
-    .form-block + p {
-      margin-top: var(--spacing-xxs) !important;
+    .hero-img + *,
+    * + .hero-img,
+    * + .cta,
+    .cta + *,
+    * + .form-block,
+    .form-block + * {
+      margin-top: var(--gap-tiny) !important;
     }
 
     .hero-img {
-      width: 100%;
       max-width: 100%;
-      border-radius: 14px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.1);
-      margin: var(--spacing-xs) 0 var(--spacing-xxs);
+      border-radius: 18px;
+      box-shadow: 0 15px 40px rgba(0,0,0,0.15);
+      margin: var(--gap-small) 0 var(--gap-tiny);
       align-self: center;
     }
-
-    .cta-wrapper {
-      text-align: right;
-      margin: var(--spacing-xxs) 0 var(--spacing-xs);
-    }
-
     .cta {
-      display: inline-block;
-      padding: 10px 26px;
-      font-size: 0.95rem;
+      display: block;
+      width: fit-content;
+      padding: 8px 24px;
+      font-size: 13px;
       font-weight: 600;
       background: var(--primary);
       color: white;
-      border-radius: 999px;
+      border-radius: 50px;
+      box-shadow: 0 3px 10px rgba(21,100,192,0.25);
       text-decoration: none;
-      box-shadow: 0 3px 10px rgba(21,100,192,0.2);
+      margin: var(--gap-tiny) 0;        /* very small vertical margin */
       transition: all 0.2s ease;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     }
-
     .cta:hover {
       background: var(--primary-light);
       transform: translateY(-1px);
-      box-shadow: 0 6px 18px rgba(21,100,192,0.3);
+      box-shadow: 0 5px 14px rgba(21,100,192,0.35);
     }
-
     .form-block {
       padding: 24px;
-      background: #ffffff;
-      border-radius: 12px;
-      margin: var(--spacing-sm) 0;
-      border: 1px solid #e5e7eb;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.04);
+      background: #FFFFFF;
+      border-radius: 20px;
+      margin: var(--gap-small) 0;
+      border: 1px solid #e0e7ff;
       width: 100%;
+      align-self: stretch;
     }
-
     .form-block input,
     .form-block button {
       width: 100%;
-      padding: 12px 14px;
+      padding: 14px;
       margin: 8px 0;
-      border-radius: 8px;
-      border: 1px solid #d1d5db;
-      font-size: 0.98rem;
+      border-radius: 12px;
+      border: 1px solid #ddd;
+      font-size: 16px;
     }
-
     .form-block button {
       background: var(--primary);
       color: white;
       border: none;
       font-weight: 600;
       cursor: pointer;
-      margin-top: var(--spacing-xs);
-      transition: background 0.2s;
     }
-
-    .form-block button:hover {
-      background: var(--primary-light);
-    }
-
     .footer-cta {
-      padding: 16px 40px;
+      padding: 20px 44px;
       text-align: center;
-      background: #f9fafb;
-      border-top: 1px solid #e5e7eb;
+      background: #FFFFFF;
       margin-top: auto;
     }
-
     .join-sendmi-btn {
-      color: #3b82f6;
-      font-size: 0.9rem;
-      font-weight: 500;
+      display: inline-block;
+      padding: 8px 24px;
+      font-size: 13px;
+      font-weight: 600;
+      background: #0066FF;
+      color: white;
+      border-radius: 50px;
       text-decoration: none;
-      transition: color 0.2s;
+      box-shadow: 0 3px 10px rgba(0, 102, 255, 0.25);
+      transition: all 0.2s ease;
     }
-
     .join-sendmi-btn:hover {
-      color: var(--primary);
-      text-decoration: underline;
+      background: #0055dd;
+      transform: translateY(-1px);
+      box-shadow: 0 5px 14px rgba(0, 102, 255, 0.35);
     }
   </style>
 </head>
@@ -215,12 +181,11 @@
         <% } else if (block.type === 'image') { %>
           <img src="<%= block.src %>" alt="Image" class="hero-img" loading="lazy">
         <% } else if (block.type === 'button') { %>
-          <div class="cta-wrapper">
-            <a href="<%= block.href || '#' %>" class="cta" 
-               <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>>
-              <%= block.text %>
-            </a>
-          </div>
+          <a href="<%= block.href || '#' %>" 
+             class="cta"
+             <%= block.href && block.href.startsWith('http') ? 'target="_blank" rel="noopener"' : '' %>>
+            <%= block.text %>
+          </a>
         <% } else if (block.type === 'form') { %>
           <div class="form-block"><%- block.html %></div>
         <% } %>
